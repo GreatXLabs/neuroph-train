@@ -7,8 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: neuroph-server
     restart: unless-stopped
+    expose:
+      - "9000"
     ports:
-      - "9000:9000"
+      - "${HOST_PORT:-9005}:9000"
     environment:
       - SERVER_PORT=9000
       - STORAGE_DIR=/app/storage
