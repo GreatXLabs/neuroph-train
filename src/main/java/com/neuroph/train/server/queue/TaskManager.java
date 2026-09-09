@@ -9,15 +9,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.PriorityBlockingQueue;
 
 /**
- * Gestor de colas de tareas multihilo con soporte de reintento automático y tolerancia a fallos.
+ * Gestor de colas de tareas multihilo con soporte de reintento automático, tolerancia a fallos
+ * y despacho prioritario por complejidad computacional (Greedy LPT).
  */
 public class TaskManager {
 
-    private final Queue<TrainingTask> pendingTasks = new ConcurrentLinkedQueue<>();
+    private final Queue<TrainingTask> pendingTasks = new PriorityBlockingQueue<>();
     private final Map<String, TrainingTask> runningTasks = new ConcurrentHashMap<>();
     private final List<TaskResult> completedResults = new CopyOnWriteArrayList<>();
 

@@ -13,10 +13,10 @@ cp target/neuroph-client.jar "$DIST_DIR/neuroph-client.jar"
 
 cat << 'EOF' > "$DIST_DIR/client.properties"
 # Configuración del Cliente de Entrenamiento Neuroph
-# Configura aquí la IP o dominio de la VPS donde corre el servidor
-server.host=127.0.0.1
-server.port=9005
-worker.name=Compañero-PC
+# Dominio seguro (WSS / HTTPS) del servidor orquestador (Dokploy / VPS)
+server.host=neuroph.aguilucho.ar
+server.port=443
+worker.name=Companero-PC
 # Cantidad de núcleos asignados (puedes cambiarlo en caliente desde la aplicación)
 worker.cores=2
 EOF

@@ -16,12 +16,18 @@ public class WorkerSession {
     private volatile int allocatedSlots;
     private final AtomicInteger busySlots = new AtomicInteger(0);
     private volatile long lastHeartbeat;
+    private volatile double benchmarkScore = 1000.0;
 
     public WorkerSession(String workerId, String workerName, ClientHandler clientHandler, int initialSlots) {
+        this(workerId, workerName, clientHandler, initialSlots, 1000.0);
+    }
+
+    public WorkerSession(String workerId, String workerName, ClientHandler clientHandler, int initialSlots, double benchmarkScore) {
         this.workerId = workerId;
         this.workerName = workerName;
         this.clientHandler = clientHandler;
         this.allocatedSlots = Math.max(1, initialSlots);
+        this.benchmarkScore = Math.max(1.0, benchmarkScore);
         this.lastHeartbeat = System.currentTimeMillis();
     }
 
@@ -74,5 +80,13 @@ public class WorkerSession {
 
     public long getLastHeartbeat() {
         return lastHeartbeat;
+    }
+
+    public double getBenchmarkScore() {
+        return benchmarkScore;
+    }
+
+    public void setBenchmarkScore(double benchmarkScore) {
+        this.benchmarkScore = Math.max(1.0, benchmarkScore);
     }
 }

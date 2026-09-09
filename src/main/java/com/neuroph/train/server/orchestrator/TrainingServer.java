@@ -104,6 +104,10 @@ public class TrainingServer {
             return;
         }
 
+        // Despacho Inteligente: ordenar workers por Benchmark Score descendente
+        // Los procesadores más veloces reciben primero las tareas más pesadas (Greedy LPT)
+        availableWorkers.sort((w1, w2) -> Double.compare(w2.getBenchmarkScore(), w1.getBenchmarkScore()));
+
         for (WorkerSession worker : availableWorkers) {
             while (worker.hasAvailableSlot()) {
                 TrainingTask task = taskManager.pollTask();
@@ -117,8 +121,9 @@ public class TrainingServer {
                 try {
                     Message msg = Message.of(MessageType.TASK_ASSIGN, JsonUtil.toJson(task));
                     worker.sendMessage(msg);
-                    log.info("Despachada tarea [{}] a [{}] (slots en uso: {}/{})",
-                            task.getTaskId(), worker.getWorkerName(),
+                    log.info("Despacho Inteligente: Tarea [{}] (complejidad: {}) -> [{}] (score: {} MFLOPS, slots: {}/{})",
+                            task.getTaskId(), String.format("%.0f", task.getEstimatedComplexity()),
+                            worker.getWorkerName(), String.format("%.1f", worker.getBenchmarkScore()),
                             worker.getBusySlots(), worker.getAllocatedSlots());
                 } catch (IOException e) {
                     log.error("Fallo al enviar tarea {} al worker [{}]: {}",

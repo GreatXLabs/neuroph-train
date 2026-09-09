@@ -6,5 +6,6 @@ package com.neuroph.train.common.model;
 public enum NormalizationType {
     NONE,
     MIN_MAX_0_1,
-    MIN_MAX_MINUS1_1
+    MIN_MAX_MINUS1_1,
+    Z_SCORE
 }

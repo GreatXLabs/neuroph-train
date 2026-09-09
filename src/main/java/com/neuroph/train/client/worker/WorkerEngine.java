@@ -123,9 +123,10 @@ public class WorkerEngine {
                     datasetCache.put(task.getDatasetId(), meta);
                 }
 
-                // 2. Particionar datos 70% entrenamiento / 30% prueba
+                // 2. Particionar datos 70% entrenamiento / 30% prueba (con Data Augmentation opcional)
                 DatasetParser.SplitResult split = DatasetParser.parseAndSplit(
-                        meta.getCsvContent(), meta, task.getTrainRatio(), task.getSplitSeed()
+                        meta.getCsvContent(), meta, task.getTrainRatio(), task.getSplitSeed(),
+                        task.isEnableAugmentation(), task.getAugmentationFactor(), task.getAugmentationNoise()
                 );
 
                 // 3. Entrenar red neuronal con Neuroph

@@ -5,7 +5,7 @@ import java.util.UUID;
 /**
  * Tarea individual de entrenamiento despachada por el servidor a un worker.
  */
-public class TrainingTask {
+public class TrainingTask implements Comparable<TrainingTask> {
 
     private String taskId;
     private String campaignId;
@@ -17,6 +17,15 @@ public class TrainingTask {
     private long createdAt;
     private String assignedWorkerId;
     private String assignedWorkerName;
+
+    // Early Stopping y Data Augmentation
+    private int patience = 80;
+    private boolean enableAugmentation = false;
+    private int augmentationFactor = 1;
+    private double augmentationNoise = 0.03;
+
+    // Estimación computacional para Despacho Inteligente (FLOPs aproximados)
+    private double estimatedComplexity = 0.0;
 
     public TrainingTask() {
         this.taskId = UUID.randomUUID().toString().substring(0, 8);
@@ -112,11 +121,62 @@ public class TrainingTask {
         this.assignedWorkerName = assignedWorkerName;
     }
 
+    public int getPatience() {
+        return patience;
+    }
+
+    public void setPatience(int patience) {
+        this.patience = patience;
+    }
+
+    public boolean isEnableAugmentation() {
+        return enableAugmentation;
+    }
+
+    public void setEnableAugmentation(boolean enableAugmentation) {
+        this.enableAugmentation = enableAugmentation;
+    }
+
+    public int getAugmentationFactor() {
+        return augmentationFactor;
+    }
+
+    public void setAugmentationFactor(int augmentationFactor) {
+        this.augmentationFactor = augmentationFactor;
+    }
+
+    public double getAugmentationNoise() {
+        return augmentationNoise;
+    }
+
+    public void setAugmentationNoise(double augmentationNoise) {
+        this.augmentationNoise = augmentationNoise;
+    }
+
+    public double getEstimatedComplexity() {
+        return estimatedComplexity;
+    }
+
+    public void setEstimatedComplexity(double estimatedComplexity) {
+        this.estimatedComplexity = estimatedComplexity;
+    }
+
+    @Override
+    public int compareTo(TrainingTask o) {
+        if (o == null) return -1;
+        // Orden descendente por coste computacional estimado (LPT)
+        int c = Double.compare(o.estimatedComplexity, this.estimatedComplexity);
+        if (c != 0) return c;
+        // En caso de empate, orden de llegada FIFO
+        return Long.compare(this.createdAt, o.createdAt);
+    }
+
     @Override
     public String toString() {
         return "TrainingTask{" +
                 "taskId='" + taskId + '\'' +
                 ", generation=" + generation +
+                ", complexity=" + String.format("%.0f", estimatedComplexity) +
                 ", config=" + (networkConfig != null ? networkConfig.getTopologySummary() : "null") +
                 '}';
     }

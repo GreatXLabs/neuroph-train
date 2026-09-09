@@ -2,6 +2,8 @@ package com.neuroph.train.client.gui;
 
 import com.neuroph.train.client.network.ServerConnection;
 import com.neuroph.train.common.model.CampaignConfig;
+import com.neuroph.train.common.model.ColumnConfig;
+import com.neuroph.train.common.model.ColumnRole;
 import com.neuroph.train.common.model.DatasetMetadata;
 import com.neuroph.train.common.model.EvaluationMetrics;
 import com.neuroph.train.common.model.HeuristicType;
@@ -9,11 +11,13 @@ import com.neuroph.train.common.model.NormalizationType;
 import com.neuroph.train.common.model.TaskResult;
 import com.neuroph.train.common.model.TaskType;
 import com.neuroph.train.common.protocol.JsonUtil;
+import com.neuroph.train.common.util.DatasetParser;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableColumn;
 import java.awt.*;
 import java.io.BufferedReader;
 import java.io.File;
@@ -50,11 +54,13 @@ public class AdminPanel extends JPanel {
     // Subpestaña Datasets
     private JTextField datasetNameField;
     private JComboBox<TaskType> taskTypeCombo;
-    private JTextField featureColsField;
-    private JTextField targetColsField;
+    private JCheckBox hasHeaderCheckbox;
     private JTextField classLabelsField;
-    private JComboBox<NormalizationType> normCombo;
+    private JComboBox<NormalizationType> normCombo; // fallback global
     private File selectedCsvFile;
+    private String cachedCsvContent;
+    private JTable columnsTable;
+    private DefaultTableModel columnsModel;
     private JTable previewTable;
     private DefaultTableModel previewModel;
     private JLabel selectedFileLabel;
@@ -69,6 +75,10 @@ public class AdminPanel extends JPanel {
     private JSpinner maxNeuronsSpinner;
     private JSpinner maxIterSpinner;
     private JSpinner targetErrorSpinner;
+    private JSpinner patienceSpinner;
+    private JCheckBox enableAugmentationCheckbox;
+    private JSpinner augmentationFactorSpinner;
+    private JSpinner augmentationNoiseSpinner;
     private JSpinner maxTasksSpinner;
     private JButton startCampaignBtn;
     private JButton pauseCampaignBtn;
@@ -174,8 +184,8 @@ public class AdminPanel extends JPanel {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        JPanel form = new JPanel(new GridLayout(7, 2, 8, 8));
-        form.setBorder(new TitledBorder("Configuración del Dataset"));
+        JPanel form = new JPanel(new GridLayout(4, 2, 8, 8));
+        form.setBorder(new TitledBorder("1. Archivo y Configuración General"));
 
         form.add(new JLabel("Archivo CSV:"));
         JPanel fileChoosePanel = new JPanel(new BorderLayout(5, 0));
@@ -185,6 +195,10 @@ public class AdminPanel extends JPanel {
         fileChoosePanel.add(selectedFileLabel, BorderLayout.CENTER);
         form.add(fileChoosePanel);
 
+        form.add(new JLabel("Estructura del Archivo:"));
+        hasHeaderCheckbox = new JCheckBox("El archivo CSV contiene fila de encabezados", true);
+        form.add(hasHeaderCheckbox);
+
         form.add(new JLabel("Nombre del Dataset:"));
         datasetNameField = new JTextField("Orquitas-Sensors-v1");
         form.add(datasetNameField);
@@ -193,38 +207,58 @@ public class AdminPanel extends JPanel {
         taskTypeCombo = new JComboBox<>(TaskType.values());
         form.add(taskTypeCombo);
 
-        form.add(new JLabel("Columnas de Entrada (features, ej. 0,1,2,3):"));
-        featureColsField = new JTextField("0,1,2");
-        form.add(featureColsField);
-
-        form.add(new JLabel("Columnas de Salida (targets, ej. 3):"));
-        targetColsField = new JTextField("3");
-        form.add(targetColsField);
-
-        form.add(new JLabel("Etiquetas de Clases (separadas por coma):"));
-        classLabelsField = new JTextField("LOBITO, MURO, OBSTACULO, SALIDA");
-        form.add(classLabelsField);
-
-        form.add(new JLabel("Normalización:"));
-        normCombo = new JComboBox<>(NormalizationType.values());
-        form.add(normCombo);
-
         panel.add(form, BorderLayout.NORTH);
 
-        // Previsualización de filas CSV
+        // Centro: Split pane con Tabla de Configuración de Columnas y Vista Previa de Datos
+        String[] colHeaders = {"Índice", "Nombre de Columna", "Rol", "Tipo de Normalización"};
+        columnsModel = new DefaultTableModel(colHeaders, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return column != 0; // El índice no se edita directamente
+            }
+        };
+        columnsTable = new JTable(columnsModel);
+        columnsTable.setRowHeight(24);
+        JScrollPane colsScroll = new JScrollPane(columnsTable);
+        colsScroll.setBorder(new TitledBorder("2. Configuración Granular de Columnas (Auto-detectadas del CSV)"));
+
         previewModel = new DefaultTableModel();
         previewTable = new JTable(previewModel);
-        JScrollPane scroll = new JScrollPane(previewTable);
-        scroll.setBorder(new TitledBorder("Vista Previa (Primeras 10 filas)"));
-        panel.add(scroll, BorderLayout.CENTER);
+        previewTable.setRowHeight(20);
+        JScrollPane previewScroll = new JScrollPane(previewTable);
+        previewScroll.setBorder(new TitledBorder("3. Vista Previa de Datos (Primeras 10 filas)"));
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, colsScroll, previewScroll);
+        splitPane.setDividerLocation(200);
+        splitPane.setResizeWeight(0.5);
+        panel.add(splitPane, BorderLayout.CENTER);
+
+        // Pie: Normalización por defecto global y Botón de Subida
+        JPanel southPanel = new JPanel(new BorderLayout(5, 5));
+        JPanel extraForm = new JPanel(new GridLayout(2, 2, 5, 5));
+        extraForm.add(new JLabel("Etiquetas de Clases (separadas por coma, si es multiclase):"));
+        classLabelsField = new JTextField("LOBITO, MURO, OBSTACULO, SALIDA");
+        extraForm.add(classLabelsField);
+
+        extraForm.add(new JLabel("Normalización global de respaldo:"));
+        normCombo = new JComboBox<>(NormalizationType.values());
+        extraForm.add(normCombo);
+        southPanel.add(extraForm, BorderLayout.NORTH);
 
         uploadButton = new JButton("Subir Dataset al Servidor Orquestador");
         uploadButton.setBackground(new Color(40, 140, 40));
         uploadButton.setForeground(Color.WHITE);
         uploadButton.setFont(uploadButton.getFont().deriveFont(Font.BOLD, 13f));
-        panel.add(uploadButton, BorderLayout.SOUTH);
+        southPanel.add(uploadButton, BorderLayout.SOUTH);
+
+        panel.add(southPanel, BorderLayout.SOUTH);
 
         selectFileBtn.addActionListener(e -> selectCsvFile());
+        hasHeaderCheckbox.addActionListener(e -> {
+            if (cachedCsvContent != null) {
+                inspectAndPopulateCsv(cachedCsvContent);
+            }
+        });
         uploadButton.addActionListener(e -> uploadDataset());
 
         return panel;
@@ -234,55 +268,106 @@ public class AdminPanel extends JPanel {
         JFileChooser chooser = new JFileChooser();
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
             selectedCsvFile = chooser.getSelectedFile();
-            selectedFileLabel.setText(selectedCsvFile.getName());
-            loadCsvPreview(selectedCsvFile);
+            try {
+                cachedCsvContent = Files.readString(selectedCsvFile.toPath(), StandardCharsets.UTF_8);
+                String baseName = selectedCsvFile.getName();
+                if (baseName.toLowerCase().endsWith(".csv")) {
+                    baseName = baseName.substring(0, baseName.length() - 4);
+                }
+                datasetNameField.setText(baseName);
+                inspectAndPopulateCsv(cachedCsvContent);
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, "Error leyendo archivo CSV: " + ex.getMessage());
+            }
         }
     }
 
-    private void loadCsvPreview(File file) {
-        previewModel.setRowCount(0);
-        previewModel.setColumnCount(0);
-        try (BufferedReader r = new BufferedReader(new FileReader(file))) {
-            String header = r.readLine();
-            if (header == null) return;
-            String delim = header.contains(";") ? ";" : (header.contains("\t") ? "\t" : ",");
-            String[] cols = header.split(delim);
-            for (String col : cols) {
-                previewModel.addColumn(col.trim());
+    private void inspectAndPopulateCsv(String csvContent) {
+        try {
+            boolean hasHeader = hasHeaderCheckbox.isSelected();
+            DatasetParser.CsvInspectionResult result = DatasetParser.inspectCsv(csvContent, hasHeader);
+
+            selectedFileLabel.setText((selectedCsvFile != null ? selectedCsvFile.getName() : "CSV") +
+                    " (" + result.getRowCount() + " filas, " + result.getColumnCount() + " columnas)");
+
+            // 1. Llenar tabla de columnas auto-detectadas
+            columnsModel.setRowCount(0);
+            for (ColumnConfig cfg : result.getColumnConfigs()) {
+                columnsModel.addRow(new Object[]{
+                        cfg.getIndex(),
+                        cfg.getName(),
+                        cfg.getRole(),
+                        cfg.getNormalization()
+                });
             }
 
-            String line;
-            int count = 0;
-            while ((line = r.readLine()) != null && count < 10) {
-                String[] values = line.split(delim);
-                previewModel.addRow(values);
-                count++;
+            // Asignar editores desplegables para Rol y Normalización
+            TableColumn roleCol = columnsTable.getColumnModel().getColumn(2);
+            roleCol.setCellEditor(new DefaultCellEditor(new JComboBox<>(ColumnRole.values())));
+
+            TableColumn normCol = columnsTable.getColumnModel().getColumn(3);
+            normCol.setCellEditor(new DefaultCellEditor(new JComboBox<>(NormalizationType.values())));
+
+            // 2. Llenar tabla de vista previa
+            previewModel.setRowCount(0);
+            previewModel.setColumnCount(0);
+            for (String h : result.getHeaders()) {
+                previewModel.addColumn(h);
             }
+            for (String[] row : result.getPreviewRows()) {
+                previewModel.addRow(row);
+            }
+
         } catch (Exception ex) {
-            JOptionPane.showMessageDialog(this, "Error leyendo CSV: " + ex.getMessage());
+            JOptionPane.showMessageDialog(this, "Error analizando CSV: " + ex.getMessage());
         }
     }
 
     private void uploadDataset() {
-        if (selectedCsvFile == null || !selectedCsvFile.exists()) {
-            JOptionPane.showMessageDialog(this, "Selecciona un archivo CSV válido.");
+        if (cachedCsvContent == null || columnsModel.getRowCount() == 0) {
+            JOptionPane.showMessageDialog(this, "Selecciona primero un archivo CSV válido.");
             return;
         }
 
+        if (columnsTable.isEditing()) {
+            columnsTable.getCellEditor().stopCellEditing();
+        }
+
         try {
-            String csv = Files.readString(selectedCsvFile.toPath(), StandardCharsets.UTF_8);
+            List<ColumnConfig> configs = new ArrayList<>();
+            int inputCount = 0;
+            int outputCount = 0;
+
+            for (int i = 0; i < columnsModel.getRowCount(); i++) {
+                int idx = ((Number) columnsModel.getValueAt(i, 0)).intValue();
+                String name = String.valueOf(columnsModel.getValueAt(i, 1));
+                ColumnRole role = (ColumnRole) columnsModel.getValueAt(i, 2);
+                NormalizationType norm = (NormalizationType) columnsModel.getValueAt(i, 3);
+
+                if (role == ColumnRole.INPUT) inputCount++;
+                if (role == ColumnRole.OUTPUT) outputCount++;
+
+                configs.add(new ColumnConfig(idx, name, role, norm));
+            }
+
+            if (inputCount == 0) {
+                JOptionPane.showMessageDialog(this, "Debes marcar al menos una columna como ENTRADA (INPUT).");
+                return;
+            }
+            if (outputCount == 0) {
+                JOptionPane.showMessageDialog(this, "Debes marcar al menos una columna como SALIDA (OUTPUT).");
+                return;
+            }
+
             DatasetMetadata meta = new DatasetMetadata();
             meta.setId("ds-" + System.currentTimeMillis() % 10000);
             meta.setName(datasetNameField.getText().trim());
-            meta.setFilename(selectedCsvFile.getName());
+            meta.setFilename(selectedCsvFile != null ? selectedCsvFile.getName() : "dataset.csv");
             meta.setTaskType((TaskType) taskTypeCombo.getSelectedItem());
+            meta.setHasHeader(hasHeaderCheckbox.isSelected());
             meta.setNormalization((NormalizationType) normCombo.getSelectedItem());
-            meta.setCsvContent(csv);
-
-            List<Integer> inCols = parseIndices(featureColsField.getText().trim());
-            List<Integer> outCols = parseIndices(targetColsField.getText().trim());
-            meta.setInputColumns(inCols);
-            meta.setOutputColumns(outCols);
+            meta.setColumnConfigs(configs);
+            meta.setCsvContent(cachedCsvContent);
 
             if (meta.getTaskType() == TaskType.CLASSIFICATION) {
                 String[] labels = classLabelsField.getText().split(",");
@@ -290,10 +375,15 @@ public class AdminPanel extends JPanel {
                 meta.setClassLabels(list);
             }
 
-            meta.setNumRows(csv.split("\n").length);
+            int rowCount = cachedCsvContent.split("\n").length - (meta.isHasHeader() ? 1 : 0);
+            meta.setNumRows(Math.max(1, rowCount));
+
+            final int reportedInputs = inputCount;
+            final int reportedOutputs = outputCount;
 
             connection.uploadDataset(meta).thenAccept(resp -> SwingUtilities.invokeLater(() -> {
-                JOptionPane.showMessageDialog(this, "Dataset subido con éxito al servidor!");
+                JOptionPane.showMessageDialog(this, "¡Dataset subido con éxito al servidor con " +
+                        reportedInputs + " entradas y " + reportedOutputs + " salidas!");
                 refreshServerDatasets();
             })).exceptionally(ex -> {
                 SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()));
@@ -305,24 +395,13 @@ public class AdminPanel extends JPanel {
         }
     }
 
-    private List<Integer> parseIndices(String text) {
-        List<Integer> list = new ArrayList<>();
-        for (String part : text.split(",")) {
-            part = part.trim();
-            if (!part.isEmpty()) {
-                list.add(Integer.parseInt(part));
-            }
-        }
-        return list;
-    }
-
     // --- Subpestaña Campaña ---
     private JPanel buildCampaignTab() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        JPanel configPanel = new JPanel(new GridLayout(8, 2, 8, 8));
-        configPanel.setBorder(new TitledBorder("Parámetros de Búsqueda Heurística"));
+        JPanel configPanel = new JPanel(new GridLayout(10, 2, 8, 8));
+        configPanel.setBorder(new TitledBorder("Parámetros de Búsqueda Heurística y Entrenamiento"));
 
         configPanel.add(new JLabel("Dataset Activo:"));
         datasetCombo = new JComboBox<>();
@@ -354,9 +433,25 @@ public class AdminPanel extends JPanel {
         maxIterSpinner = new JSpinner(new SpinnerNumberModel(1000, 100, 50000, 100));
         configPanel.add(maxIterSpinner);
 
+        configPanel.add(new JLabel("Early Stopping (Paciencia en Épocas):"));
+        patienceSpinner = new JSpinner(new SpinnerNumberModel(80, 10, 2000, 10));
+        configPanel.add(patienceSpinner);
+
         configPanel.add(new JLabel("Error Objetivo (Target Error):"));
         targetErrorSpinner = new JSpinner(new SpinnerNumberModel(0.01, 0.0001, 0.5, 0.005));
         configPanel.add(targetErrorSpinner);
+
+        configPanel.add(new JLabel("Data Augmentation (Ruido en Sensores):"));
+        JPanel augBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        enableAugmentationCheckbox = new JCheckBox("Activar", false);
+        augmentationFactorSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 5, 1));
+        augmentationNoiseSpinner = new JSpinner(new SpinnerNumberModel(0.03, 0.005, 0.20, 0.005));
+        augBox.add(enableAugmentationCheckbox);
+        augBox.add(new JLabel("Copias:"));
+        augBox.add(augmentationFactorSpinner);
+        augBox.add(new JLabel("Ruido:"));
+        augBox.add(augmentationNoiseSpinner);
+        configPanel.add(augBox);
 
         configPanel.add(new JLabel("Total de Tareas a Explorar:"));
         maxTasksSpinner = new JSpinner(new SpinnerNumberModel(30, 5, 500, 5));
@@ -414,7 +509,11 @@ public class AdminPanel extends JPanel {
         cfg.setMinNeuronsPerLayer((Integer) minNeuronsSpinner.getValue());
         cfg.setMaxNeuronsPerLayer((Integer) maxNeuronsSpinner.getValue());
         cfg.setMaxIterations((Integer) maxIterSpinner.getValue());
+        cfg.setPatience(((Number) patienceSpinner.getValue()).intValue());
         cfg.setTargetError(((Number) targetErrorSpinner.getValue()).doubleValue());
+        cfg.setEnableAugmentation(enableAugmentationCheckbox.isSelected());
+        cfg.setAugmentationFactor(((Number) augmentationFactorSpinner.getValue()).intValue());
+        cfg.setAugmentationNoise(((Number) augmentationNoiseSpinner.getValue()).doubleValue());
         cfg.setMaxTotalTasks((Integer) maxTasksSpinner.getValue());
 
         connection.startCampaign(cfg).thenAccept(r -> SwingUtilities.invokeLater(() -> {

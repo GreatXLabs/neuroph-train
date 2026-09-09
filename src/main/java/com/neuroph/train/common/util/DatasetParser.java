@@ -1,5 +1,7 @@
 package com.neuroph.train.common.util;
 
+import com.neuroph.train.common.model.ColumnConfig;
+import com.neuroph.train.common.model.ColumnRole;
 import com.neuroph.train.common.model.DatasetMetadata;
 import com.neuroph.train.common.model.NormalizationType;
 import com.neuroph.train.common.model.TaskType;
@@ -61,13 +63,57 @@ public final class DatasetParser {
         }
     }
 
+    public static class CsvInspectionResult {
+        private final String delimiter;
+        private final int columnCount;
+        private final int rowCount;
+        private final List<String> headers;
+        private final List<ColumnConfig> columnConfigs;
+        private final List<String[]> previewRows;
+
+        public CsvInspectionResult(String delimiter, int columnCount, int rowCount,
+                                   List<String> headers, List<ColumnConfig> columnConfigs,
+                                   List<String[]> previewRows) {
+            this.delimiter = delimiter;
+            this.columnCount = columnCount;
+            this.rowCount = rowCount;
+            this.headers = headers;
+            this.columnConfigs = columnConfigs;
+            this.previewRows = previewRows;
+        }
+
+        public String getDelimiter() {
+            return delimiter;
+        }
+
+        public int getColumnCount() {
+            return columnCount;
+        }
+
+        public int getRowCount() {
+            return rowCount;
+        }
+
+        public List<String> getHeaders() {
+            return headers;
+        }
+
+        public List<ColumnConfig> getColumnConfigs() {
+            return columnConfigs;
+        }
+
+        public List<String[]> getPreviewRows() {
+            return previewRows;
+        }
+    }
+
     private DatasetParser() {
     }
 
     /**
-     * Parsea el CSV aplicando la partición train/test y normalización.
+     * Inspecciona el contenido CSV detectando delimitador, cantidad de columnas, nombres y pre-llenando roles.
      */
-    public static SplitResult parseAndSplit(String csvContent, DatasetMetadata meta, double trainRatio, long seed) throws IOException {
+    public static CsvInspectionResult inspectCsv(String csvContent, boolean hasHeader) throws IOException {
         if (csvContent == null || csvContent.trim().isEmpty()) {
             throw new IllegalArgumentException("El contenido CSV no puede estar vacío");
         }
@@ -87,18 +133,96 @@ public final class DatasetParser {
             throw new IllegalArgumentException("El CSV no contiene filas de datos");
         }
 
-        // Detectar si la primera fila es encabezado
-        int startRow = 0;
+        String firstLine = lines.get(0);
+        String delimiter = detectDelimiter(firstLine);
+        String[] firstTokens = firstLine.split(delimiter);
+        int colCount = firstTokens.length;
+
+        List<String> headers = new ArrayList<>();
+        if (hasHeader) {
+            for (String t : firstTokens) {
+                headers.add(t.trim());
+            }
+        } else {
+            for (int i = 0; i < colCount; i++) {
+                headers.add("Columna " + i);
+            }
+        }
+
+        // Pre-llenar configuraciones por defecto: 0..N-2 INPUT (MIN_MAX_0_1), N-1 OUTPUT (NONE)
+        List<com.neuroph.train.common.model.ColumnConfig> configs = new ArrayList<>();
+        for (int i = 0; i < colCount; i++) {
+            String colName = headers.get(i);
+            if (i == colCount - 1 && colCount > 1) {
+                configs.add(new com.neuroph.train.common.model.ColumnConfig(
+                        i, colName, com.neuroph.train.common.model.ColumnRole.OUTPUT, NormalizationType.NONE
+                ));
+            } else {
+                configs.add(new com.neuroph.train.common.model.ColumnConfig(
+                        i, colName, com.neuroph.train.common.model.ColumnRole.INPUT, NormalizationType.MIN_MAX_0_1
+                ));
+            }
+        }
+
+        int startRow = hasHeader ? 1 : 0;
+        int dataRowCount = lines.size() - startRow;
+
+        List<String[]> preview = new ArrayList<>();
+        int maxPreview = Math.min(10, dataRowCount);
+        for (int i = 0; i < maxPreview; i++) {
+            String[] tokens = lines.get(startRow + i).split(delimiter);
+            preview.add(tokens);
+        }
+
+        return new CsvInspectionResult(delimiter, colCount, dataRowCount, headers, configs, preview);
+    }
+
+    /**
+     * Parsea el CSV aplicando la partición train/test y normalización estándar (sin data augmentation).
+     */
+    public static SplitResult parseAndSplit(String csvContent, DatasetMetadata meta, double trainRatio, long seed) throws IOException {
+        return parseAndSplit(csvContent, meta, trainRatio, seed, false, 0, 0.0);
+    }
+
+    /**
+     * Parsea el CSV aplicando partición train/test, normalización granular por columna y Data Augmentation opcional.
+     */
+    public static SplitResult parseAndSplit(String csvContent, DatasetMetadata meta, double trainRatio, long seed,
+                                            boolean enableAugmentation, int augmentationFactor, double augmentationNoise) throws IOException {
+        if (csvContent == null || csvContent.trim().isEmpty()) {
+            throw new IllegalArgumentException("El contenido CSV no puede estar vacío");
+        }
+
+        List<String> lines = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new StringReader(csvContent))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (!line.isEmpty() && !line.startsWith("#")) {
+                    lines.add(line);
+                }
+            }
+        }
+
+        if (lines.isEmpty()) {
+            throw new IllegalArgumentException("El CSV no contiene filas de datos");
+        }
+
+        // Determinar si hay encabezado respetando la configuración de meta
         String firstLine = lines.get(0);
         String delimiter = detectDelimiter(firstLine);
         String[] firstTokens = firstLine.split(delimiter);
 
-        boolean hasHeader = false;
-        try {
-            Double.parseDouble(firstTokens[0].trim());
-        } catch (NumberFormatException e) {
-            hasHeader = true;
-            startRow = 1;
+        int startRow = 0;
+        if (meta != null) {
+            startRow = meta.isHasHeader() ? 1 : 0;
+        } else {
+            try {
+                Double.parseDouble(firstTokens[0].trim());
+                startRow = 0;
+            } catch (NumberFormatException e) {
+                startRow = 1;
+            }
         }
 
         List<double[]> rawInputs = new ArrayList<>();
@@ -110,7 +234,11 @@ public final class DatasetParser {
 
         for (int i = startRow; i < lines.size(); i++) {
             String[] tokens = lines.get(i).split(delimiter);
-            if (tokens.length < inCols.size() + outCols.size()) {
+            int minRequired = 0;
+            for (int col : inCols) if (col >= minRequired) minRequired = col + 1;
+            for (int col : outCols) if (col >= minRequired) minRequired = col + 1;
+
+            if (tokens.length < minRequired) {
                 continue; // Saltear filas incompletas
             }
 
@@ -152,8 +280,8 @@ public final class DatasetParser {
             classIndices.add(classIdx);
         }
 
-        // Normalización de entradas si corresponde
-        normalizeInputs(rawInputs, meta.getNormalization());
+        // Normalización granular por columna
+        normalizeInputsGranular(rawInputs, inCols, meta);
 
         // Construcción de la lista de muestras
         List<DataSample> allSamples = new ArrayList<>();
@@ -181,7 +309,7 @@ public final class DatasetParser {
                 for (int i = 0; i < classSamples.size(); i++) {
                     DataSample s = classSamples.get(i);
                     if (i < nTrain) {
-                        trainSet.add(new DataSetRow(s.getInputs(), s.getDesiredOutputs()));
+                        addSampleWithOptionalAugmentation(trainSet, s, enableAugmentation, augmentationFactor, augmentationNoise, rand);
                     } else {
                         testSamples.add(s);
                     }
@@ -203,7 +331,7 @@ public final class DatasetParser {
             for (int i = 0; i < shuffled.size(); i++) {
                 DataSample sample = shuffled.get(i);
                 if (i < trainCount) {
-                    trainSet.add(new DataSetRow(sample.getInputs(), sample.getDesiredOutputs()));
+                    addSampleWithOptionalAugmentation(trainSet, sample, enableAugmentation, augmentationFactor, augmentationNoise, rand);
                 } else {
                     testSamples.add(sample);
                 }
@@ -211,6 +339,25 @@ public final class DatasetParser {
         }
 
         return new SplitResult(trainSet, testSamples);
+    }
+
+    private static void addSampleWithOptionalAugmentation(DataSet trainSet, DataSample sample,
+                                                          boolean enableAugmentation, int factor, double noise,
+                                                          Random rand) {
+        // 1. Agregar muestra original intacta
+        trainSet.add(new DataSetRow(sample.getInputs(), sample.getDesiredOutputs()));
+
+        // 2. Si Data Augmentation está activo, agregar copias sintéticas con perturbación gaussiana
+        if (enableAugmentation && factor > 0 && noise > 0.0) {
+            int inputDim = sample.getInputs().length;
+            for (int k = 0; k < factor; k++) {
+                double[] noisy = new double[inputDim];
+                for (int d = 0; d < inputDim; d++) {
+                    noisy[d] = sample.getInputs()[d] + rand.nextGaussian() * noise;
+                }
+                trainSet.add(new DataSetRow(noisy, sample.getDesiredOutputs()));
+            }
+        }
     }
 
     private static String detectDelimiter(String line) {
@@ -233,38 +380,61 @@ public final class DatasetParser {
         }
     }
 
-    private static void normalizeInputs(List<double[]> inputs, NormalizationType type) {
-        if (type == null || type == NormalizationType.NONE || inputs.isEmpty()) {
+    /**
+     * Normaliza las columnas de entrada respetando la configuración granular por columna.
+     */
+    private static void normalizeInputsGranular(List<double[]> inputs, List<Integer> inCols, DatasetMetadata meta) {
+        if (inputs.isEmpty()) {
             return;
         }
 
         int dims = inputs.get(0).length;
-        double[] min = new double[dims];
-        double[] max = new double[dims];
 
         for (int d = 0; d < dims; d++) {
-            min[d] = Double.POSITIVE_INFINITY;
-            max[d] = Double.NEGATIVE_INFINITY;
-        }
+            int originalCol = (inCols != null && d < inCols.size()) ? inCols.get(d) : d;
+            NormalizationType type = (meta != null) ? meta.getNormalizationForColumn(originalCol) : NormalizationType.MIN_MAX_0_1;
 
-        for (double[] in : inputs) {
-            for (int d = 0; d < dims; d++) {
-                if (in[d] < min[d]) min[d] = in[d];
-                if (in[d] > max[d]) max[d] = in[d];
+            if (type == null || type == NormalizationType.NONE) {
+                continue;
             }
-        }
 
-        for (double[] in : inputs) {
-            for (int d = 0; d < dims; d++) {
-                double range = max[d] - min[d];
-                if (range > 1e-9) {
-                    if (type == NormalizationType.MIN_MAX_0_1) {
-                        in[d] = (in[d] - min[d]) / range;
-                    } else if (type == NormalizationType.MIN_MAX_MINUS1_1) {
-                        in[d] = 2.0 * ((in[d] - min[d]) / range) - 1.0;
+            if (type == NormalizationType.MIN_MAX_0_1 || type == NormalizationType.MIN_MAX_MINUS1_1) {
+                double min = Double.POSITIVE_INFINITY;
+                double max = Double.NEGATIVE_INFINITY;
+                for (double[] in : inputs) {
+                    if (in[d] < min) min = in[d];
+                    if (in[d] > max) max = in[d];
+                }
+                double range = max - min;
+                for (double[] in : inputs) {
+                    if (range > 1e-9) {
+                        if (type == NormalizationType.MIN_MAX_0_1) {
+                            in[d] = (in[d] - min) / range;
+                        } else {
+                            in[d] = 2.0 * ((in[d] - min) / range) - 1.0;
+                        }
+                    } else {
+                        in[d] = 0.0;
                     }
-                } else {
-                    in[d] = 0.0;
+                }
+            } else if (type == NormalizationType.Z_SCORE) {
+                double sum = 0.0;
+                for (double[] in : inputs) {
+                    sum += in[d];
+                }
+                double mean = sum / inputs.size();
+                double varianceSum = 0.0;
+                for (double[] in : inputs) {
+                    double diff = in[d] - mean;
+                    varianceSum += diff * diff;
+                }
+                double stdDev = Math.sqrt(varianceSum / inputs.size());
+                for (double[] in : inputs) {
+                    if (stdDev > 1e-9) {
+                        in[d] = (in[d] - mean) / stdDev;
+                    } else {
+                        in[d] = 0.0;
+                    }
                 }
             }
         }

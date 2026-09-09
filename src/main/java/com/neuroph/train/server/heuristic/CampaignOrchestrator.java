@@ -58,6 +58,7 @@ public class CampaignOrchestrator {
 
         // Generar lote inicial de tareas
         List<TrainingTask> initialTasks = strategy.initializeCampaign(campaignConfig, meta);
+        prepareTasks(initialTasks, campaignConfig, meta);
         taskManager.enqueueTasks(initialTasks);
         log.info("Encoladas {} tareas iniciales de exploración", initialTasks.size());
     }
@@ -103,10 +104,47 @@ public class CampaignOrchestrator {
             int remaining = activeCampaign.getMaxTotalTasks() - (totalCompleted + taskManager.getRunningCount() + taskManager.getPendingCount());
             if (remaining > 0 && !nextBatch.isEmpty()) {
                 int toAdd = Math.min(remaining, nextBatch.size());
-                taskManager.enqueueTasks(nextBatch.subList(0, toAdd));
+                List<TrainingTask> batchToAdd = nextBatch.subList(0, toAdd);
+                prepareTasks(batchToAdd, activeCampaign, activeDataset);
+                taskManager.enqueueTasks(batchToAdd);
                 log.info("Heurística generó nuevo lote de {} tareas", toAdd);
             }
         }
+    }
+
+    private void prepareTasks(List<TrainingTask> tasks, CampaignConfig campaign, DatasetMetadata dataset) {
+        if (tasks == null) return;
+        for (TrainingTask task : tasks) {
+            task.setPatience(campaign.getPatience());
+            task.setEnableAugmentation(campaign.isEnableAugmentation());
+            task.setAugmentationFactor(campaign.getAugmentationFactor());
+            task.setAugmentationNoise(campaign.getAugmentationNoise());
+            task.setEstimatedComplexity(calculateTaskComplexity(task, dataset));
+        }
+    }
+
+    private double calculateTaskComplexity(TrainingTask task, DatasetMetadata dataset) {
+        if (task.getNetworkConfig() == null) {
+            return 1000.0;
+        }
+
+        var config = task.getNetworkConfig();
+        java.util.List<Integer> layerSizes = new java.util.ArrayList<>();
+        layerSizes.add(config.getInputNeurons());
+        if (config.getHiddenNeurons() != null) {
+            layerSizes.addAll(config.getHiddenNeurons());
+        }
+        layerSizes.add(config.getOutputNeurons());
+
+        double totalConnections = 0;
+        for (int i = 0; i < layerSizes.size() - 1; i++) {
+            totalConnections += (double) layerSizes.get(i) * layerSizes.get(i + 1);
+        }
+
+        int maxIter = Math.max(1, config.getMaxIterations());
+        int rows = (dataset != null && dataset.getNumRows() > 0) ? dataset.getNumRows() : 100;
+
+        return totalConnections * maxIter * rows;
     }
 
     public synchronized void pauseCampaign() {

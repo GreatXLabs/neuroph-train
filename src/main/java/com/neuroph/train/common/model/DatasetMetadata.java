@@ -1,10 +1,12 @@
 package com.neuroph.train.common.model;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Metadatos descriptivos de un dataset cargado en el sistema.
+ * Metadatos descriptivos de un dataset cargado en el sistema con soporte de configuración granular de columnas.
  */
 public class DatasetMetadata {
 
@@ -12,12 +14,19 @@ public class DatasetMetadata {
     private String name;
     private String filename;
     private int numRows;
+    private boolean hasHeader = true;
+
+    // Configuración granular por columna
+    private List<ColumnConfig> columnConfigs = new ArrayList<>();
+
+    // Listas compatibles de índices de columnas
     private List<Integer> inputColumns = new ArrayList<>();
     private List<Integer> outputColumns = new ArrayList<>();
     private List<String> columnHeaders = new ArrayList<>();
+
     private TaskType taskType = TaskType.CLASSIFICATION;
     private List<String> classLabels = new ArrayList<>();
-    private NormalizationType normalization = NormalizationType.MIN_MAX_0_1;
+    private NormalizationType normalization = NormalizationType.MIN_MAX_0_1; // fallback global
     private long createdAt;
     private String csvContent; // Usado durante el upload o sincronización
 
@@ -25,8 +34,45 @@ public class DatasetMetadata {
         this.createdAt = System.currentTimeMillis();
     }
 
+    public List<Integer> getInputColumns() {
+        if (columnConfigs != null && !columnConfigs.isEmpty()) {
+            List<Integer> inputs = new ArrayList<>();
+            for (ColumnConfig c : columnConfigs) {
+                if (c.getRole() == ColumnRole.INPUT) {
+                    inputs.add(c.getIndex());
+                }
+            }
+            return inputs;
+        }
+        return inputColumns != null ? inputColumns : new ArrayList<>();
+    }
+
+    public List<Integer> getOutputColumns() {
+        if (columnConfigs != null && !columnConfigs.isEmpty()) {
+            List<Integer> outputs = new ArrayList<>();
+            for (ColumnConfig c : columnConfigs) {
+                if (c.getRole() == ColumnRole.OUTPUT) {
+                    outputs.add(c.getIndex());
+                }
+            }
+            return outputs;
+        }
+        return outputColumns != null ? outputColumns : new ArrayList<>();
+    }
+
+    public NormalizationType getNormalizationForColumn(int colIndex) {
+        if (columnConfigs != null) {
+            for (ColumnConfig c : columnConfigs) {
+                if (c.getIndex() == colIndex) {
+                    return c.getNormalization() != null ? c.getNormalization() : normalization;
+                }
+            }
+        }
+        return normalization != null ? normalization : NormalizationType.MIN_MAX_0_1;
+    }
+
     public int getInputCount() {
-        return inputColumns != null ? inputColumns.size() : 0;
+        return getInputColumns().size();
     }
 
     public int getOutputCount() {
@@ -34,7 +80,7 @@ public class DatasetMetadata {
             // One-hot encoding para multiclase
             return classLabels.size();
         }
-        return outputColumns != null ? outputColumns.size() : 1;
+        return getOutputColumns().size() > 0 ? getOutputColumns().size() : 1;
     }
 
     // Getters y Setters
@@ -70,16 +116,24 @@ public class DatasetMetadata {
         this.numRows = numRows;
     }
 
-    public List<Integer> getInputColumns() {
-        return inputColumns;
+    public boolean isHasHeader() {
+        return hasHeader;
+    }
+
+    public void setHasHeader(boolean hasHeader) {
+        this.hasHeader = hasHeader;
+    }
+
+    public List<ColumnConfig> getColumnConfigs() {
+        return columnConfigs;
+    }
+
+    public void setColumnConfigs(List<ColumnConfig> columnConfigs) {
+        this.columnConfigs = columnConfigs;
     }
 
     public void setInputColumns(List<Integer> inputColumns) {
         this.inputColumns = inputColumns;
-    }
-
-    public List<Integer> getOutputColumns() {
-        return outputColumns;
     }
 
     public void setOutputColumns(List<Integer> outputColumns) {

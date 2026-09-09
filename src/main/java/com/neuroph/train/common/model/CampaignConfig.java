@@ -28,13 +28,19 @@ public class CampaignConfig {
     private double momentumMin = 0.10;
     private double momentumMax = 0.70;
 
-    // Criterios de entrenamiento y parada
+    // Criterios de entrenamiento, parada y Early Stopping
     private int maxIterations = 1000;
     private double targetError = 0.01;
+    private int patience = 80; // Épocas sin mejora para Early Stopping generoso
     private int populationOrBatchSize = 8;
     private int maxTotalTasks = 40;
     private double trainTestRatio = 0.70;
     private long splitSeed = 42L;
+
+    // Data Augmentation (Generación de datos sintéticos con ruido de sensores)
+    private boolean enableAugmentation = false;
+    private int augmentationFactor = 1; // Cantidad de copias sintéticas por muestra
+    private double augmentationNoise = 0.03; // Nivel de ruido gaussiano (3%)
 
     private long createdAt;
     private String status = "PENDING"; // PENDING, RUNNING, PAUSED, COMPLETED
@@ -165,6 +171,14 @@ public class CampaignConfig {
         this.targetError = targetError;
     }
 
+    public int getPatience() {
+        return patience;
+    }
+
+    public void setPatience(int patience) {
+        this.patience = patience;
+    }
+
     public int getPopulationOrBatchSize() {
         return populationOrBatchSize;
     }
@@ -195,6 +209,30 @@ public class CampaignConfig {
 
     public void setSplitSeed(long splitSeed) {
         this.splitSeed = splitSeed;
+    }
+
+    public boolean isEnableAugmentation() {
+        return enableAugmentation;
+    }
+
+    public void setEnableAugmentation(boolean enableAugmentation) {
+        this.enableAugmentation = enableAugmentation;
+    }
+
+    public int getAugmentationFactor() {
+        return augmentationFactor;
+    }
+
+    public void setAugmentationFactor(int augmentationFactor) {
+        this.augmentationFactor = augmentationFactor;
+    }
+
+    public double getAugmentationNoise() {
+        return augmentationNoise;
+    }
+
+    public void setAugmentationNoise(double augmentationNoise) {
+        this.augmentationNoise = augmentationNoise;
     }
 
     public long getCreatedAt() {

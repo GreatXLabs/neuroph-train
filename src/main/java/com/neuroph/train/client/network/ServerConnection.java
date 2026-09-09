@@ -1,5 +1,6 @@
 package com.neuroph.train.client.network;
 
+import com.neuroph.train.client.worker.BenchmarkUtil;
 import com.neuroph.train.common.model.CampaignConfig;
 import com.neuroph.train.common.model.DatasetMetadata;
 import com.neuroph.train.common.model.TaskResult;
@@ -103,10 +104,14 @@ public class ServerConnection {
     }
 
     private void registerAsWorker() throws IOException {
+        double benchmarkScore = BenchmarkUtil.runBenchmark();
+        log.info("Micro-benchmark de CPU ejecutado: {} MFLOPS", benchmarkScore);
+
         Map<String, Object> regData = new HashMap<>();
         regData.put("workerName", workerName);
         regData.put("slots", allocatedSlots);
         regData.put("workerId", java.util.UUID.randomUUID().toString());
+        regData.put("benchmarkScore", benchmarkScore);
 
         Message msg = Message.of(MessageType.WORKER_REGISTER, JsonUtil.toJson(regData));
         sendMessage(msg);

@@ -160,9 +160,10 @@ public class ClientHandler implements Runnable {
         String name = (String) data.getOrDefault("workerName", "Worker-" + socket.getPort());
         int slots = ((Number) data.getOrDefault("slots", 2)).intValue();
         String id = (String) data.getOrDefault("workerId", java.util.UUID.randomUUID().toString());
+        double benchmarkScore = ((Number) data.getOrDefault("benchmarkScore", 1000.0)).doubleValue();
 
         this.registeredWorkerId = id;
-        WorkerSession session = new WorkerSession(id, name, this, slots);
+        WorkerSession session = new WorkerSession(id, name, this, slots, benchmarkScore);
         workerRegistry.register(session);
 
         Map<String, Object> resp = new HashMap<>();

@@ -78,30 +78,74 @@ public class NeurophTrainer {
         learningRule.setMaxIterations(config.getMaxIterations());
         learningRule.setMaxError(config.getMaxError());
 
-        if (progressCallback != null) {
-            learningRule.addListener(new LearningEventListener() {
-                private long lastNotifyTime = 0;
+        // Early Stopping generoso adaptativo guiado por el servidor
+        int patience = task.getPatience() > 0 ? task.getPatience() : 80;
 
-                @Override
-                public void handleLearningEvent(LearningEvent event) {
-                    long now = System.currentTimeMillis();
-                    if (now - lastNotifyTime >= 500) { // Notificar como máximo cada 500ms
-                        lastNotifyTime = now;
-                        progressCallback.onProgress(learningRule.getCurrentIteration(), learningRule.getTotalNetworkError());
+        final class EarlyStoppingListener implements LearningEventListener {
+            private long lastNotifyTime = 0;
+            private double bestError = Double.POSITIVE_INFINITY;
+            private int epochsWithoutImprovement = 0;
+            private double[] bestWeights = null;
+            private volatile boolean stoppedEarly = false;
+
+            @Override
+            public void handleLearningEvent(LearningEvent event) {
+                if (event.getEventType() == LearningEvent.Type.EPOCH_ENDED) {
+                    int epoch = learningRule.getCurrentIteration();
+                    double currentError = learningRule.getTotalNetworkError();
+
+                    // Monitorear progreso con umbral adaptativo generoso (0.05% de mejora o 1e-4 absoluto)
+                    double minDelta = Math.max(1e-4, bestError * 0.0005);
+                    if (currentError < bestError - minDelta) {
+                        bestError = currentError;
+                        epochsWithoutImprovement = 0;
+                        bestWeights = copyWeights(mlp);
+                    } else {
+                        epochsWithoutImprovement++;
+                        if (epochsWithoutImprovement >= patience && !stoppedEarly) {
+                            stoppedEarly = true;
+                            learningRule.stopLearning();
+                        }
+                    }
+
+                    if (progressCallback != null) {
+                        long now = System.currentTimeMillis();
+                        if (now - lastNotifyTime >= 500) {
+                            lastNotifyTime = now;
+                            progressCallback.onProgress(epoch, currentError);
+                        }
                     }
                 }
-            });
+            }
         }
+
+        EarlyStoppingListener earlyStopping = new EarlyStoppingListener();
+        learningRule.addListener(earlyStopping);
 
         long startTime = System.currentTimeMillis();
         mlp.learn(trainSet);
         long endTime = System.currentTimeMillis();
 
+        // Restaurar los pesos óptimos alcanzados en caso de sobreajuste o meseta
+        if (earlyStopping.bestWeights != null) {
+            mlp.setWeights(earlyStopping.bestWeights);
+        }
+
         double durationSeconds = (endTime - startTime) / 1000.0;
         int iterations = learningRule.getCurrentIteration();
-        double finalError = learningRule.getTotalNetworkError();
+        double finalError = earlyStopping.bestWeights != null ? earlyStopping.bestError : learningRule.getTotalNetworkError();
 
         return new TrainingResult(mlp, durationSeconds, iterations, finalError);
+    }
+
+    private static double[] copyWeights(MultiLayerPerceptron mlp) {
+        Double[] boxed = mlp.getWeights();
+        if (boxed == null) return null;
+        double[] unboxed = new double[boxed.length];
+        for (int i = 0; i < boxed.length; i++) {
+            unboxed[i] = boxed[i] != null ? boxed[i] : 0.0;
+        }
+        return unboxed;
     }
 
     private TransferFunctionType parseTransferFunction(String name) {
