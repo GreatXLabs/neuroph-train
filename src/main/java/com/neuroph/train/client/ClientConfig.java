@@ -12,7 +12,7 @@ import java.util.Properties;
 public class ClientConfig {
 
     private String serverHost = "127.0.0.1";
-    private int serverPort = 9000;
+    private int serverPort = 9005;
     private String workerName = System.getProperty("user.name", "Alumno") + "-PC";
     private int allocatedCores = Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
 
