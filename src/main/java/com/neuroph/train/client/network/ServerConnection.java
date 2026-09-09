@@ -16,9 +16,14 @@ import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.net.Socket;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -26,7 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
- * Cliente de red TCP: mantiene conexión persistente saliente hacia la VPS,
+ * Cliente de red TCP / WebSocket: mantiene conexión persistente saliente hacia la VPS,
  * gestiona Heartbeats automáticos y despacho de tareas/respuestas.
  */
 public class ServerConnection {
@@ -41,6 +46,7 @@ public class ServerConnection {
     private Socket socket;
     private BufferedInputStream in;
     private BufferedOutputStream out;
+    private WebSocket webSocket;
     private volatile boolean connected = false;
 
     private final Map<String, CompletableFuture<Message>> pendingRequests = new ConcurrentHashMap<>();
@@ -75,22 +81,21 @@ public class ServerConnection {
         this.taskHandler = taskHandler;
     }
 
+    private boolean isWebSocketTarget() {
+        return port == 443 || host.startsWith("wss://") || host.startsWith("ws://") ||
+                host.endsWith(".ar") || host.endsWith(".com") || host.endsWith(".net") || host.endsWith(".org");
+    }
+
     public synchronized void connect() throws IOException {
         if (connected) return;
 
-        log.info("Conectando a {}:{}...", host, port);
-        socket = new Socket(host, port);
-        socket.setTcpNoDelay(true);
-        socket.setKeepAlive(true);
+        if (isWebSocketTarget()) {
+            connectWebSocket();
+        } else {
+            connectTcpSocket();
+        }
 
-        in = new BufferedInputStream(socket.getInputStream());
-        out = new BufferedOutputStream(socket.getOutputStream());
         connected = true;
-
-        // Iniciar hilo de lectura
-        Thread readerThread = new Thread(this::readLoop, "Client-Receiver-Loop");
-        readerThread.setDaemon(true);
-        readerThread.start();
 
         // Registrarse como Worker
         registerAsWorker();
@@ -101,6 +106,84 @@ public class ServerConnection {
         if (listener != null) {
             listener.onConnected();
         }
+    }
+
+    private void connectWebSocket() throws IOException {
+        URI wsUri;
+        if (host.startsWith("wss://") || host.startsWith("ws://")) {
+            wsUri = URI.create(host);
+        } else if (port == 443) {
+            wsUri = URI.create("wss://" + host + "/ws");
+        } else {
+            wsUri = URI.create("ws://" + host + ":" + port + "/ws");
+        }
+
+        log.info("Conectando vía WebSocket seguro a {}...", wsUri);
+
+        WebSocket.Listener wsListener = new WebSocket.Listener() {
+            private final StringBuilder buffer = new StringBuilder();
+
+            @Override
+            public CompletionStage<?> onText(WebSocket ws, CharSequence data, boolean last) {
+                buffer.append(data);
+                if (last) {
+                    String fullJson = buffer.toString();
+                    buffer.setLength(0);
+                    try {
+                        Message msg = JsonUtil.fromJson(fullJson, Message.class);
+                        if (msg != null) {
+                            processIncomingMessage(msg);
+                        }
+                    } catch (Exception e) {
+                        log.error("Error procesando mensaje WebSocket entrante: {}", e.getMessage());
+                    }
+                }
+                ws.request(1);
+                return CompletableFuture.completedFuture(null);
+            }
+
+            @Override
+            public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
+                disconnect("Conexión WebSocket cerrada (" + statusCode + "): " + reason);
+                return CompletableFuture.completedFuture(null);
+            }
+
+            @Override
+            public void onError(WebSocket ws, Throwable error) {
+                disconnect("Error en conexión WebSocket: " + error.getMessage());
+            }
+        };
+
+        try {
+            HttpClient httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+
+            this.webSocket = httpClient.newWebSocketBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .buildAsync(wsUri, wsListener)
+                    .get(10, TimeUnit.SECONDS);
+
+            log.info("WebSocket conectado exitosamente a {}", wsUri);
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            throw new IOException("Fallo al conectar WebSocket con " + wsUri + ": " + cause.getMessage(), cause);
+        }
+    }
+
+    private void connectTcpSocket() throws IOException {
+        log.info("Conectando vía Socket TCP a {}:{}...", host, port);
+        socket = new Socket(host, port);
+        socket.setTcpNoDelay(true);
+        socket.setKeepAlive(true);
+
+        in = new BufferedInputStream(socket.getInputStream());
+        out = new BufferedOutputStream(socket.getOutputStream());
+
+        // Iniciar hilo de lectura TCP
+        Thread readerThread = new Thread(this::readLoop, "Client-Receiver-Loop");
+        readerThread.setDaemon(true);
+        readerThread.start();
     }
 
     private void registerAsWorker() throws IOException {
@@ -119,7 +202,7 @@ public class ServerConnection {
 
     private void startHeartbeatTimer() {
         heartbeatScheduler.scheduleAtFixedRate(() -> {
-            if (connected && socket != null && !socket.isClosed()) {
+            if (isConnected()) {
                 try {
                     sendMessage(Message.of(MessageType.HEARTBEAT, "PING"));
                 } catch (Exception e) {
@@ -215,7 +298,10 @@ public class ServerConnection {
     }
 
     public synchronized void sendMessage(Message message) throws IOException {
-        if (out != null && !socket.isClosed()) {
+        if (webSocket != null) {
+            String json = JsonUtil.toJson(message);
+            webSocket.sendText(json, true);
+        } else if (out != null && socket != null && !socket.isClosed()) {
             MessageFraming.writeMessage(out, message);
         }
     }
@@ -283,6 +369,14 @@ public class ServerConnection {
     public synchronized void disconnect(String reason) {
         if (!connected) return;
         connected = false;
+
+        if (webSocket != null) {
+            try {
+                webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Cierre por cliente");
+            } catch (Exception ignored) {}
+            webSocket = null;
+        }
+
         try {
             if (socket != null && !socket.isClosed()) {
                 socket.close();
@@ -300,6 +394,6 @@ public class ServerConnection {
     }
 
     public boolean isConnected() {
-        return connected && socket != null && !socket.isClosed();
+        return connected && (webSocket != null || (socket != null && !socket.isClosed()));
     }
 }

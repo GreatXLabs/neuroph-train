@@ -41,6 +41,7 @@ public class ClientHandler implements Runnable {
     private BufferedInputStream in;
     private BufferedOutputStream out;
     private volatile boolean running = true;
+    private volatile boolean isWebSocket = false;
     private String registeredWorkerId;
     private boolean isAdminAuthenticated = false;
 
@@ -66,8 +67,27 @@ public class ClientHandler implements Runnable {
             in = new BufferedInputStream(socket.getInputStream());
             out = new BufferedOutputStream(socket.getOutputStream());
 
+            // Detectar si la conexión entrante es HTTP / WebSocket
+            if (com.neuroph.train.common.protocol.WebSocketFraming.isHttpRequest(in)) {
+                com.neuroph.train.common.protocol.WebSocketFraming.HttpRequest req =
+                        com.neuroph.train.common.protocol.WebSocketFraming.readHttpRequest(in);
+                if (req.isWebSocketUpgrade()) {
+                    com.neuroph.train.common.protocol.WebSocketFraming.sendWebSocketHandshakeResponse(out, req.getWebSocketKey());
+                    isWebSocket = true;
+                    log.info("Conexión WebSocket establecida desde {}", socket.getRemoteSocketAddress());
+                } else {
+                    // Petición HTTP simple (ej: health check de Dokploy/Traefik o consulta desde navegador)
+                    String body = "{\"status\":\"UP\",\"service\":\"Neuroph Training Server\",\"version\":\"1.0.0\"}\n";
+                    com.neuroph.train.common.protocol.WebSocketFraming.sendHttpResponse(
+                            out, 200, "OK", "application/json; charset=utf-8", body);
+                    return;
+                }
+            }
+
             while (running && !socket.isClosed()) {
-                Message message = MessageFraming.readMessage(in);
+                Message message = isWebSocket ?
+                        com.neuroph.train.common.protocol.WebSocketFraming.readWebSocketMessage(in, out) :
+                        MessageFraming.readMessage(in);
                 if (message == null) {
                     break; // EOF
                 }
@@ -310,7 +330,11 @@ public class ClientHandler implements Runnable {
 
     public synchronized void sendMessage(Message message) throws IOException {
         if (out != null && !socket.isClosed()) {
-            MessageFraming.writeMessage(out, message);
+            if (isWebSocket) {
+                com.neuroph.train.common.protocol.WebSocketFraming.writeWebSocketMessage(out, message);
+            } else {
+                MessageFraming.writeMessage(out, message);
+            }
         }
     }
 

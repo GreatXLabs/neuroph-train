@@ -36,7 +36,7 @@ Puedes descargar la última versión compilada directamente desde los [Releases 
 6. **Modo Headless (Consola)**:
    - Para ejecutar workers en servidores o terminales sin pantalla:
      ```bash
-     java -jar neuroph-client.jar --headless --host=IP_SERVIDOR --port=9000 --cores=4 --name=Nodo-01
+     java -jar neuroph-client.jar --headless --host=neuroph.aguilucho.ar --port=443 --cores=4 --name=Nodo-01
      ```
 
 ---

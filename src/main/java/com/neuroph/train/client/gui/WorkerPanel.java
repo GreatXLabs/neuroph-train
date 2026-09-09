@@ -55,24 +55,29 @@ public class WorkerPanel extends JPanel {
 
         connPanel.add(new JLabel("Host:"));
         hostField = new JTextField(config.getServerHost(), 12);
+        hostField.setToolTipText("Dirección de dominio (ej: neuroph.aguilucho.ar) o IP del servidor orquestador");
         connPanel.add(hostField);
 
         connPanel.add(new JLabel("Puerto:"));
         portSpinner = new JSpinner(new SpinnerNumberModel(config.getServerPort(), 1, 65535, 1));
+        portSpinner.setToolTipText("Puerto de conexión: 443 para HTTPS/WSS seguro mediante dominio, o puerto TCP directo");
         connPanel.add(portSpinner);
 
         connPanel.add(new JLabel("Alias:"));
         nameField = new JTextField(config.getWorkerName(), 10);
+        nameField.setToolTipText("Nombre o alias identificador de esta computadora en el cluster y tabla de líderes");
         connPanel.add(nameField);
 
         connectButton = new JButton("Conectar y Entrenar");
         connectButton.setBackground(new Color(40, 140, 40));
         connectButton.setForeground(Color.WHITE);
+        connectButton.setToolTipText("Establece conexión persistente con el servidor para comenzar a entrenar redes neuronales");
         connPanel.add(connectButton);
 
         statusLabel = new JLabel("● Desconectado");
         statusLabel.setForeground(Color.GRAY);
         statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD));
+        statusLabel.setToolTipText("Estado actual del enlace de red con el orquestador");
         connPanel.add(statusLabel);
 
         topPanel.add(connPanel, BorderLayout.NORTH);
@@ -89,16 +94,19 @@ public class WorkerPanel extends JPanel {
         coreSlider.setMinorTickSpacing(1);
         coreSlider.setPaintTicks(true);
         coreSlider.setPaintLabels(true);
+        coreSlider.setToolTipText("Control en caliente de recursos: ajusta cuántos hilos/núcleos de CPU aportas al cluster");
 
         double pct = (double) initialCores / maxCores * 100.0;
         coreLabel = new JLabel(String.format("Hilos asignados: %d / %d núcleos (%.0f%% de CPU)",
                 initialCores, maxCores, pct), SwingConstants.CENTER);
         coreLabel.setFont(coreLabel.getFont().deriveFont(Font.BOLD, 13f));
+        coreLabel.setToolTipText("Porcentaje de núcleos de procesador asignados al entrenamiento");
 
         cpuUsageBar = new JProgressBar(0, maxCores);
         cpuUsageBar.setValue(0);
         cpuUsageBar.setStringPainted(true);
         cpuUsageBar.setString("0 tareas activas en este nodo");
+        cpuUsageBar.setToolTipText("Carga actual: cantidad de tareas de entrenamiento ejecutándose en paralelo en este equipo");
 
         JPanel sliderBox = new JPanel(new GridLayout(2, 1, 5, 5));
         sliderBox.add(coreSlider);
@@ -119,6 +127,7 @@ public class WorkerPanel extends JPanel {
         logArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         logArea.setBackground(new Color(25, 25, 25));
         logArea.setForeground(new Color(200, 220, 200));
+        logArea.setToolTipText("Registro cronológico en tiempo real de eventos, métricas y tareas procesadas");
 
         JScrollPane logScroll = new JScrollPane(logArea);
         logPanel.add(logScroll, BorderLayout.CENTER);

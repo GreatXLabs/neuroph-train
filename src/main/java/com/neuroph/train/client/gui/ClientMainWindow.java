@@ -46,8 +46,11 @@ public class ClientMainWindow extends JFrame {
         WorkerPanel workerPanel = new WorkerPanel(config, connection, engine);
         AdminPanel adminPanel = new AdminPanel(connection);
 
-        tabbedPane.addTab("💻 Modo Worker (Colaborativo)", workerPanel);
-        tabbedPane.addTab("🛡️ Modo Administrador (Gestión & Modelos)", adminPanel);
+        tabbedPane.addTab("Modo Worker (Colaborativo)", workerPanel);
+        tabbedPane.setToolTipTextAt(0, "Modo de entrenamiento colaborativo para donar poder de cómputo al cluster de Neuroph");
+
+        tabbedPane.addTab("Modo Administrador (Gestión & Modelos)", adminPanel);
+        tabbedPane.setToolTipTextAt(1, "Panel de administración para cargar datasets, orquestar campañas y evaluar modelos");
 
         getContentPane().setLayout(new BorderLayout());
         getContentPane().add(tabbedPane, BorderLayout.CENTER);

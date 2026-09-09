@@ -117,11 +117,13 @@ public class AdminPanel extends JPanel {
 
         box.add(new JLabel("Introduce el ADMIN_TOKEN configurado en el servidor:", SwingConstants.CENTER));
         tokenField = new JPasswordField(15);
+        tokenField.setToolTipText("Introduce la clave secreta ADMIN_TOKEN configurada en el servidor (Dokploy/VPS)");
         box.add(tokenField);
 
         loginButton = new JButton("Acceder al Panel de Control");
         loginButton.setBackground(new Color(60, 100, 180));
         loginButton.setForeground(Color.WHITE);
+        loginButton.setToolTipText("Valida las credenciales de administrador para desbloquear el panel de control");
         box.add(loginButton);
 
         loginStatusLabel = new JLabel("Requiere conexión activa previa al servidor", SwingConstants.CENTER);
@@ -172,9 +174,14 @@ public class AdminPanel extends JPanel {
     private void buildDashboardView() {
         adminTabs = new JTabbedPane();
 
-        adminTabs.addTab("📁 Cargar Datasets", buildDatasetsTab());
-        adminTabs.addTab("⚡ Control de Campaña", buildCampaignTab());
-        adminTabs.addTab("🏆 Leaderboard & Modelos .nnet", buildLeaderboardTab());
+        adminTabs.addTab("Cargar Datasets", buildDatasetsTab());
+        adminTabs.setToolTipTextAt(0, "Subida e inspección de datasets CSV con configuración granular de columnas");
+
+        adminTabs.addTab("Control de Campaña", buildCampaignTab());
+        adminTabs.setToolTipTextAt(1, "Configuración y lanzamiento de campañas heurísticas y monitoreo del cluster");
+
+        adminTabs.addTab("Leaderboard & Modelos .nnet", buildLeaderboardTab());
+        adminTabs.setToolTipTextAt(2, "Ranking de redes neuronales entrenadas, prueba de inferencia y descarga .nnet");
 
         cardContainer.add(adminTabs, "DASHBOARD");
     }
@@ -190,6 +197,7 @@ public class AdminPanel extends JPanel {
         form.add(new JLabel("Archivo CSV:"));
         JPanel fileChoosePanel = new JPanel(new BorderLayout(5, 0));
         JButton selectFileBtn = new JButton("Examinar CSV...");
+        selectFileBtn.setToolTipText("Selecciona un archivo CSV desde tu computadora para analizar sus columnas y datos");
         selectedFileLabel = new JLabel("Ningún archivo seleccionado");
         fileChoosePanel.add(selectFileBtn, BorderLayout.WEST);
         fileChoosePanel.add(selectedFileLabel, BorderLayout.CENTER);
@@ -197,14 +205,17 @@ public class AdminPanel extends JPanel {
 
         form.add(new JLabel("Estructura del Archivo:"));
         hasHeaderCheckbox = new JCheckBox("El archivo CSV contiene fila de encabezados", true);
+        hasHeaderCheckbox.setToolTipText("Indica si la primera fila del archivo contiene nombres de columnas o si son directamente registros de datos");
         form.add(hasHeaderCheckbox);
 
         form.add(new JLabel("Nombre del Dataset:"));
         datasetNameField = new JTextField("Orquitas-Sensors-v1");
+        datasetNameField.setToolTipText("Nombre identificador único del dataset dentro del servidor orquestador");
         form.add(datasetNameField);
 
         form.add(new JLabel("Tipo de Problema:"));
         taskTypeCombo = new JComboBox<>(TaskType.values());
+        taskTypeCombo.setToolTipText("Tipo de problema: REGRESSION (predicción continua) o CLASSIFICATION (categorías/etiquetas)");
         form.add(taskTypeCombo);
 
         panel.add(form, BorderLayout.NORTH);
@@ -219,12 +230,14 @@ public class AdminPanel extends JPanel {
         };
         columnsTable = new JTable(columnsModel);
         columnsTable.setRowHeight(24);
+        columnsTable.setToolTipText("Configura el rol (INPUT, TARGET o IGNORE) y la normalización individual para cada columna");
         JScrollPane colsScroll = new JScrollPane(columnsTable);
         colsScroll.setBorder(new TitledBorder("2. Configuración Granular de Columnas (Auto-detectadas del CSV)"));
 
         previewModel = new DefaultTableModel();
         previewTable = new JTable(previewModel);
         previewTable.setRowHeight(20);
+        previewTable.setToolTipText("Muestra las primeras filas leídas del archivo CSV para verificar el formato de los datos");
         JScrollPane previewScroll = new JScrollPane(previewTable);
         previewScroll.setBorder(new TitledBorder("3. Vista Previa de Datos (Primeras 10 filas)"));
 
@@ -238,10 +251,12 @@ public class AdminPanel extends JPanel {
         JPanel extraForm = new JPanel(new GridLayout(2, 2, 5, 5));
         extraForm.add(new JLabel("Etiquetas de Clases (separadas por coma, si es multiclase):"));
         classLabelsField = new JTextField("LOBITO, MURO, OBSTACULO, SALIDA");
+        classLabelsField.setToolTipText("Nombres de las categorías ordenadas por índice (ej: LOBITO, MURO, OBSTACULO, SALIDA) para clasificación");
         extraForm.add(classLabelsField);
 
         extraForm.add(new JLabel("Normalización global de respaldo:"));
         normCombo = new JComboBox<>(NormalizationType.values());
+        normCombo.setToolTipText("Técnica de normalización por defecto aplicada a las columnas numéricas (MIN_MAX escala al rango [0, 1])");
         extraForm.add(normCombo);
         southPanel.add(extraForm, BorderLayout.NORTH);
 
@@ -249,6 +264,7 @@ public class AdminPanel extends JPanel {
         uploadButton.setBackground(new Color(40, 140, 40));
         uploadButton.setForeground(Color.WHITE);
         uploadButton.setFont(uploadButton.getFont().deriveFont(Font.BOLD, 13f));
+        uploadButton.setToolTipText("Envía y registra el dataset estructurado en el almacenamiento persistente del servidor");
         southPanel.add(uploadButton, BorderLayout.SOUTH);
 
         panel.add(southPanel, BorderLayout.SOUTH);
@@ -405,16 +421,20 @@ public class AdminPanel extends JPanel {
 
         configPanel.add(new JLabel("Dataset Activo:"));
         datasetCombo = new JComboBox<>();
+        datasetCombo.setToolTipText("Selecciona el dataset guardado en el servidor para entrenar las redes neuronales");
         configPanel.add(datasetCombo);
 
         configPanel.add(new JLabel("Estrategia Heurística:"));
         heuristicCombo = new JComboBox<>(HeuristicType.values());
+        heuristicCombo.setToolTipText("Estrategia de búsqueda heurística: GUIDED_SEARCH (búsqueda informada), EVOLUTIONARY (genético), RANDOM_SEARCH");
         configPanel.add(heuristicCombo);
 
         configPanel.add(new JLabel("Capas Ocultas (Mín / Máx):"));
         JPanel layersBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         minLayersSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 3, 1));
+        minLayersSpinner.setToolTipText("Número mínimo de capas ocultas a explorar en las arquitecturas neuronales");
         maxLayersSpinner = new JSpinner(new SpinnerNumberModel(2, 1, 4, 1));
+        maxLayersSpinner.setToolTipText("Número máximo de capas ocultas a explorar en las arquitecturas neuronales");
         layersBox.add(minLayersSpinner);
         layersBox.add(new JLabel("a"));
         layersBox.add(maxLayersSpinner);
@@ -423,7 +443,9 @@ public class AdminPanel extends JPanel {
         configPanel.add(new JLabel("Neuronas por Capa (Mín / Máx):"));
         JPanel neuronsBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         minNeuronsSpinner = new JSpinner(new SpinnerNumberModel(4, 2, 128, 1));
+        minNeuronsSpinner.setToolTipText("Número mínimo de neuronas por capa oculta");
         maxNeuronsSpinner = new JSpinner(new SpinnerNumberModel(24, 2, 256, 1));
+        maxNeuronsSpinner.setToolTipText("Número máximo de neuronas por capa oculta");
         neuronsBox.add(minNeuronsSpinner);
         neuronsBox.add(new JLabel("a"));
         neuronsBox.add(maxNeuronsSpinner);
@@ -431,21 +453,27 @@ public class AdminPanel extends JPanel {
 
         configPanel.add(new JLabel("Máximo de Épocas (Iteraciones):"));
         maxIterSpinner = new JSpinner(new SpinnerNumberModel(1000, 100, 50000, 100));
+        maxIterSpinner.setToolTipText("Máximo de épocas de entrenamiento permitidas por cada tarea de red neuronal");
         configPanel.add(maxIterSpinner);
 
         configPanel.add(new JLabel("Early Stopping (Paciencia en Épocas):"));
         patienceSpinner = new JSpinner(new SpinnerNumberModel(80, 10, 2000, 10));
+        patienceSpinner.setToolTipText("Early Stopping: épocas consecutivas toleradas sin mejora del error antes de detener la tarea");
         configPanel.add(patienceSpinner);
 
         configPanel.add(new JLabel("Error Objetivo (Target Error):"));
         targetErrorSpinner = new JSpinner(new SpinnerNumberModel(0.01, 0.0001, 0.5, 0.005));
+        targetErrorSpinner.setToolTipText("Error cuadrático medio objetivo. Si la red lo alcanza, finaliza tempranamente con éxito");
         configPanel.add(targetErrorSpinner);
 
         configPanel.add(new JLabel("Data Augmentation (Ruido en Sensores):"));
         JPanel augBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         enableAugmentationCheckbox = new JCheckBox("Activar", false);
+        enableAugmentationCheckbox.setToolTipText("Data Augmentation: sintetiza muestras agregando perturbación gaussiana a las entradas");
         augmentationFactorSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 5, 1));
+        augmentationFactorSpinner.setToolTipText("Cantidad de réplicas sintéticas adicionales generadas por cada fila de entrenamiento");
         augmentationNoiseSpinner = new JSpinner(new SpinnerNumberModel(0.03, 0.005, 0.20, 0.005));
+        augmentationNoiseSpinner.setToolTipText("Desviación estándar del ruido gaussiano añadido a los valores de los sensores");
         augBox.add(enableAugmentationCheckbox);
         augBox.add(new JLabel("Copias:"));
         augBox.add(augmentationFactorSpinner);
@@ -455,16 +483,21 @@ public class AdminPanel extends JPanel {
 
         configPanel.add(new JLabel("Total de Tareas a Explorar:"));
         maxTasksSpinner = new JSpinner(new SpinnerNumberModel(30, 5, 500, 5));
+        maxTasksSpinner.setToolTipText("Cantidad total de configuraciones de redes neuronales a evaluar en esta campaña");
         configPanel.add(maxTasksSpinner);
 
         // Botones de Acción
         JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
-        startCampaignBtn = new JButton("▶️ Iniciar Campaña");
+        startCampaignBtn = new JButton("Iniciar Campaña");
         startCampaignBtn.setBackground(new Color(40, 140, 40));
         startCampaignBtn.setForeground(Color.WHITE);
+        startCampaignBtn.setToolTipText("Inicia la campaña heurística en el servidor para despachar tareas a todos los workers conectados");
 
-        pauseCampaignBtn = new JButton("⏸️ Pausar");
-        stopCampaignBtn = new JButton("⏹️ Detener");
+        pauseCampaignBtn = new JButton("Pausar");
+        pauseCampaignBtn.setToolTipText("Pausa temporalmente la asignación de nuevas tareas de entrenamiento");
+
+        stopCampaignBtn = new JButton("Detener");
+        stopCampaignBtn.setToolTipText("Detiene la campaña actual y cancela las tareas pendientes en la cola");
 
         actionPanel.add(startCampaignBtn);
         actionPanel.add(pauseCampaignBtn);
@@ -576,16 +609,52 @@ public class AdminPanel extends JPanel {
         leaderboardTable = new JTable(leaderboardModel);
         leaderboardTable.setAutoCreateRowSorter(true);
         leaderboardTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        leaderboardTable.setToolTipText("Selecciona una fila para probar inferencia en vivo o descargar el archivo .nnet");
+
+        String[] columnToolTips = {
+                "Identificador único de la tarea",
+                "Topología de capas neuronales (Entradas-Ocultas-Salidas)",
+                "Función de activación/transferencia en capas ocultas",
+                "Porcentaje de acierto en clasificación sobre el conjunto de test",
+                "Raíz del Error Cuadrático Medio en conjunto de prueba",
+                "Error Cuadrático Medio en conjunto de prueba",
+                "Error Absoluto Medio promedio en conjunto de prueba",
+                "Coeficiente de determinación R² (calidad de ajuste del modelo)",
+                "Error Porcentual Absoluto Medio (%)",
+                "Error máximo absoluto registrado en una sola muestra",
+                "Percentil 90 del error absoluto",
+                "Tiempo total de entrenamiento en segundos",
+                "Épocas ejecutadas hasta convergencia o early stopping",
+                "Error de entrenamiento alcanzado al finalizar",
+                "Nombre del nodo (Worker) que entrenó este modelo"
+        };
+        javax.swing.table.JTableHeader header = new javax.swing.table.JTableHeader(leaderboardTable.getColumnModel()) {
+            @Override
+            public String getToolTipText(java.awt.event.MouseEvent e) {
+                int col = columnAtPoint(e.getPoint());
+                int modelCol = getTable().convertColumnIndexToModel(col);
+                if (modelCol >= 0 && modelCol < columnToolTips.length) {
+                    return columnToolTips[modelCol];
+                }
+                return super.getToolTipText(e);
+            }
+        };
+        leaderboardTable.setTableHeader(header);
 
         JScrollPane scroll = new JScrollPane(leaderboardTable);
         panel.add(scroll, BorderLayout.CENTER);
 
         JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 5));
-        refreshLbButton = new JButton("🔄 Actualizar Tabla");
-        JButton testInferenceBtn = new JButton("🧪 Probar Inferencia en Vivo");
-        downloadNnetButton = new JButton("💾 Descargar .nnet");
+        refreshLbButton = new JButton("Actualizar Tabla");
+        refreshLbButton.setToolTipText("Consulta al servidor el estado más reciente del ranking de modelos evaluados");
+
+        JButton testInferenceBtn = new JButton("Probar Inferencia en Vivo");
+        testInferenceBtn.setToolTipText("Abre una ventana para ingresar entradas manuales y probar la predicción de la red en tiempo real");
+
+        downloadNnetButton = new JButton("Descargar .nnet");
         downloadNnetButton.setBackground(new Color(60, 110, 180));
         downloadNnetButton.setForeground(Color.WHITE);
+        downloadNnetButton.setToolTipText("Descarga el archivo binario compilado .nnet de la red neuronal seleccionada");
 
         bottom.add(refreshLbButton);
         bottom.add(testInferenceBtn);
