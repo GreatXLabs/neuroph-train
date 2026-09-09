@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  neuroph-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neuroph-server
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+    environment:
+      - SERVER_PORT=9000
+      - STORAGE_DIR=/app/storage
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-secret-orquitas-2026}
+      - HEARTBEAT_TIMEOUT=15
+    volumes:
+      - neuroph_storage:/app/storage
+
+volumes:
+  neuroph_storage:
+    driver: local
