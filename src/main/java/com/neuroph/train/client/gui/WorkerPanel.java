@@ -56,12 +56,6 @@ public class WorkerPanel extends JPanel {
         connPanel.add(new JLabel("Host:"));
         hostField = new JTextField(config.getServerHost(), 14);
         hostField.setToolTipText("Dirección de dominio (ej: neuroph.aguilucho.ar) o IP del servidor orquestador");
-        hostField.addFocusListener(new java.awt.event.FocusAdapter() {
-            @Override
-            public void focusLost(java.awt.event.FocusEvent e) {
-                sanitizeInputs();
-            }
-        });
         connPanel.add(hostField);
 
         connPanel.add(new JLabel("Puerto:"));
@@ -79,6 +73,16 @@ public class WorkerPanel extends JPanel {
         connectButton.setForeground(Color.WHITE);
         connectButton.setToolTipText("Establece conexión persistente con el servidor para comenzar a entrenar redes neuronales");
         connPanel.add(connectButton);
+
+        JButton resetHostBtn = new JButton("Restaurar Oficial");
+        resetHostBtn.setToolTipText("Restaura la dirección por defecto del servidor oficial (neuroph.aguilucho.ar:443)");
+        resetHostBtn.addActionListener(e -> {
+            hostField.setText("neuroph.aguilucho.ar");
+            portSpinner.setValue(443);
+            applyAndSaveConnectionConfig();
+            appendLog("Dirección restaurada al servidor oficial por defecto (neuroph.aguilucho.ar:443).");
+        });
+        connPanel.add(resetHostBtn);
 
         statusLabel = new JLabel("● Desconectado");
         statusLabel.setForeground(Color.GRAY);
@@ -150,6 +154,23 @@ public class WorkerPanel extends JPanel {
                 startConnection();
             }
         });
+
+        // Actualización reactiva y persistencia inmediata de configuración
+        hostField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                applyAndSaveConnectionConfig();
+            }
+        });
+        hostField.addActionListener(e -> applyAndSaveConnectionConfig());
+        portSpinner.addChangeListener(e -> applyAndSaveConnectionConfig());
+        nameField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                applyAndSaveConnectionConfig();
+            }
+        });
+        nameField.addActionListener(e -> applyAndSaveConnectionConfig());
 
         // Cambio de Recursos en Caliente (Hot Resize)
         coreSlider.addChangeListener(e -> {
@@ -274,14 +295,17 @@ public class WorkerPanel extends JPanel {
         hostField.setText(host);
     }
 
-    private void startConnection() {
+    public synchronized void applyAndSaveConnectionConfig() {
         sanitizeInputs();
         String host = hostField.getText().trim();
+        if (host.isEmpty()) {
+            host = "neuroph.aguilucho.ar";
+            hostField.setText(host);
+        }
         int port = (Integer) portSpinner.getValue();
         String name = nameField.getText().trim();
-
         if (name.isEmpty()) {
-            name = "Worker-" + System.currentTimeMillis() % 1000;
+            name = "Alumno-PC";
         }
 
         config.setServerHost(host);
@@ -290,6 +314,12 @@ public class WorkerPanel extends JPanel {
         config.save();
 
         connection.setTarget(host, port);
+    }
+
+    private void startConnection() {
+        applyAndSaveConnectionConfig();
+        String host = connection.getHost();
+        int port = connection.getPort();
 
         statusLabel.setText("● Conectando...");
         statusLabel.setForeground(Color.ORANGE);

@@ -79,6 +79,16 @@ class WebSocketFramingTest {
         conn1.setTarget("https://custom.domain.com/ws", 443);
         assertEquals("custom.domain.com", conn1.getHost());
         assertEquals(443, conn1.getPort());
+
+        conn1.setTarget("   ", 443);
+        assertEquals("neuroph.aguilucho.ar", conn1.getHost());
+
+        com.neuroph.train.client.ClientConfig cfg = new com.neuroph.train.client.ClientConfig();
+        cfg.setServerHost("https://neuroph.aguilucho.ar/ws");
+        assertEquals("neuroph.aguilucho.ar", cfg.getServerHost());
+
+        cfg.setServerHost("");
+        assertEquals("neuroph.aguilucho.ar", cfg.getServerHost());
     }
 
     @Test

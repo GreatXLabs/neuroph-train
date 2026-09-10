@@ -103,6 +103,10 @@ public class ServerConnection {
             } catch (NumberFormatException ignored) {}
         }
 
+        if (clean.isEmpty()) {
+            clean = "neuroph.aguilucho.ar";
+        }
+
         this.host = clean;
         this.port = cleanPort;
     }

@@ -17,6 +17,7 @@ public class ClientMainWindow extends JFrame {
     private final ClientConfig config;
     private final ServerConnection connection;
     private final WorkerEngine engine;
+    private WorkerPanel workerPanel;
 
     public ClientMainWindow(ClientConfig config, ServerConnection connection, WorkerEngine engine) {
         super("Neuroph-Train | Sistema Distribuido de Entrenamiento de Redes Neuronales");
@@ -34,6 +35,10 @@ public class ClientMainWindow extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosing(WindowEvent e) {
+                if (workerPanel != null) {
+                    workerPanel.applyAndSaveConnectionConfig();
+                }
+                config.save();
                 connection.disconnect("Ventana cerrada");
                 engine.shutdown();
             }
@@ -43,7 +48,7 @@ public class ClientMainWindow extends JFrame {
     private void initUI() {
         JTabbedPane tabbedPane = new JTabbedPane();
 
-        WorkerPanel workerPanel = new WorkerPanel(config, connection, engine);
+        this.workerPanel = new WorkerPanel(config, connection, engine);
         AdminPanel adminPanel = new AdminPanel(connection);
 
         tabbedPane.addTab("Modo Worker (Colaborativo)", workerPanel);

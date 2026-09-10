@@ -26,7 +26,7 @@ public class ClientConfig {
             Properties props = new Properties();
             try (FileInputStream fis = new FileInputStream(file)) {
                 props.load(fis);
-                config.serverHost = props.getProperty("server.host", config.serverHost);
+                config.setServerHost(props.getProperty("server.host", config.serverHost));
                 config.serverPort = Integer.parseInt(props.getProperty("server.port", String.valueOf(config.serverPort)));
                 config.workerName = props.getProperty("worker.name", config.workerName);
                 config.allocatedCores = Integer.parseInt(props.getProperty("worker.cores", String.valueOf(config.allocatedCores)));
@@ -63,6 +63,9 @@ public class ClientConfig {
             else if (clean.startsWith("ws://")) clean = clean.substring(5);
             if (clean.endsWith("/ws")) clean = clean.substring(0, clean.length() - 3);
             while (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
+            if (clean.isEmpty()) {
+                clean = "neuroph.aguilucho.ar";
+            }
             this.serverHost = clean;
         } else {
             this.serverHost = "neuroph.aguilucho.ar";
