@@ -54,8 +54,14 @@ public class WorkerPanel extends JPanel {
         connPanel.setBorder(new TitledBorder("Conexión al Servidor Orquestador (VPS / Local)"));
 
         connPanel.add(new JLabel("Host:"));
-        hostField = new JTextField(config.getServerHost(), 12);
+        hostField = new JTextField(config.getServerHost(), 14);
         hostField.setToolTipText("Dirección de dominio (ej: neuroph.aguilucho.ar) o IP del servidor orquestador");
+        hostField.addFocusListener(new java.awt.event.FocusAdapter() {
+            @Override
+            public void focusLost(java.awt.event.FocusEvent e) {
+                sanitizeInputs();
+            }
+        });
         connPanel.add(hostField);
 
         connPanel.add(new JLabel("Puerto:"));
@@ -238,7 +244,38 @@ public class WorkerPanel extends JPanel {
         });
     }
 
+    private void sanitizeInputs() {
+        String host = hostField.getText().trim();
+        if (host.startsWith("https://")) {
+            host = host.substring(8);
+            portSpinner.setValue(443);
+        } else if (host.startsWith("http://")) {
+            host = host.substring(7);
+        } else if (host.startsWith("wss://")) {
+            host = host.substring(6);
+            portSpinner.setValue(443);
+        } else if (host.startsWith("ws://")) {
+            host = host.substring(5);
+        }
+        if (host.endsWith("/ws")) {
+            host = host.substring(0, host.length() - 3);
+        }
+        while (host.endsWith("/")) {
+            host = host.substring(0, host.length() - 1);
+        }
+        if (host.contains(":")) {
+            String[] parts = host.split(":");
+            host = parts[0];
+            try {
+                int p = Integer.parseInt(parts[1]);
+                portSpinner.setValue(p);
+            } catch (NumberFormatException ignored) {}
+        }
+        hostField.setText(host);
+    }
+
     private void startConnection() {
+        sanitizeInputs();
         String host = hostField.getText().trim();
         int port = (Integer) portSpinner.getValue();
         String name = nameField.getText().trim();
@@ -251,6 +288,8 @@ public class WorkerPanel extends JPanel {
         config.setServerPort(port);
         config.setWorkerName(name);
         config.save();
+
+        connection.setTarget(host, port);
 
         statusLabel.setText("● Conectando...");
         statusLabel.setForeground(Color.ORANGE);

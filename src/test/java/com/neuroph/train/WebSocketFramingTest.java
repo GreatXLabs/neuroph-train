@@ -60,6 +60,28 @@ class WebSocketFramingTest {
     }
 
     @Test
+    void testServerConnectionUrlSanitization() {
+        com.neuroph.train.client.network.ServerConnection conn1 =
+                new com.neuroph.train.client.network.ServerConnection("https://neuroph.aguilucho.ar", 443, "Worker", 2);
+        assertEquals("neuroph.aguilucho.ar", conn1.getHost());
+        assertEquals(443, conn1.getPort());
+
+        com.neuroph.train.client.network.ServerConnection conn2 =
+                new com.neuroph.train.client.network.ServerConnection("wss://neuroph.aguilucho.ar/ws", 9000, "Worker", 2);
+        assertEquals("neuroph.aguilucho.ar", conn2.getHost());
+        assertEquals(443, conn2.getPort());
+
+        com.neuroph.train.client.network.ServerConnection conn3 =
+                new com.neuroph.train.client.network.ServerConnection("http://127.0.0.1:9000/", 9000, "Worker", 2);
+        assertEquals("127.0.0.1", conn3.getHost());
+        assertEquals(9000, conn3.getPort());
+
+        conn1.setTarget("https://custom.domain.com/ws", 443);
+        assertEquals("custom.domain.com", conn1.getHost());
+        assertEquals(443, conn1.getPort());
+    }
+
+    @Test
     void testReadMaskedWebSocketFrameFromClient() throws Exception {
         // Simular frame enviado por un cliente con máscara
         Message msg = Message.of(MessageType.WORKER_REGISTER, "{\"slots\":4}");

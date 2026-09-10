@@ -38,8 +38,8 @@ public class ServerConnection {
 
     private static final Logger log = LoggerFactory.getLogger(ServerConnection.class);
 
-    private final String host;
-    private final int port;
+    private volatile String host;
+    private volatile int port;
     private final String workerName;
     private volatile int allocatedSlots;
 
@@ -67,10 +67,52 @@ public class ServerConnection {
     private Consumer<TrainingTask> taskHandler;
 
     public ServerConnection(String host, int port, String workerName, int initialSlots) {
-        this.host = host;
-        this.port = port;
+        setTarget(host, port);
         this.workerName = workerName;
         this.allocatedSlots = initialSlots;
+    }
+
+    public synchronized void setTarget(String rawHost, int rawPort) {
+        String clean = (rawHost != null) ? rawHost.trim() : "neuroph.aguilucho.ar";
+        int cleanPort = rawPort;
+
+        if (clean.startsWith("https://")) {
+            clean = clean.substring(8);
+            if (cleanPort == 9000 || cleanPort == 80) cleanPort = 443;
+        } else if (clean.startsWith("http://")) {
+            clean = clean.substring(7);
+        } else if (clean.startsWith("wss://")) {
+            clean = clean.substring(6);
+            if (cleanPort == 9000 || cleanPort == 80) cleanPort = 443;
+        } else if (clean.startsWith("ws://")) {
+            clean = clean.substring(5);
+        }
+
+        if (clean.endsWith("/ws")) {
+            clean = clean.substring(0, clean.length() - 3);
+        }
+        while (clean.endsWith("/")) {
+            clean = clean.substring(0, clean.length() - 1);
+        }
+
+        if (clean.contains(":")) {
+            String[] parts = clean.split(":");
+            clean = parts[0];
+            try {
+                cleanPort = Integer.parseInt(parts[1]);
+            } catch (NumberFormatException ignored) {}
+        }
+
+        this.host = clean;
+        this.port = cleanPort;
+    }
+
+    public String getHost() {
+        return host;
+    }
+
+    public int getPort() {
+        return port;
     }
 
     public void setListener(Listener listener) {
@@ -82,8 +124,7 @@ public class ServerConnection {
     }
 
     private boolean isWebSocketTarget() {
-        return port == 443 || host.startsWith("wss://") || host.startsWith("ws://") ||
-                host.endsWith(".ar") || host.endsWith(".com") || host.endsWith(".net") || host.endsWith(".org");
+        return port == 443 || host.endsWith(".ar") || host.endsWith(".com") || host.endsWith(".net") || host.endsWith(".org");
     }
 
     public synchronized void connect() throws IOException {
@@ -108,16 +149,20 @@ public class ServerConnection {
         }
     }
 
-    private void connectWebSocket() throws IOException {
-        URI wsUri;
-        if (host.startsWith("wss://") || host.startsWith("ws://")) {
-            wsUri = URI.create(host);
-        } else if (port == 443) {
-            wsUri = URI.create("wss://" + host + "/ws");
+    private URI buildWebSocketUri() {
+        boolean isSsl = (port == 443 || host.endsWith(".ar") || host.endsWith(".com") || host.endsWith(".net") || host.endsWith(".org"));
+        String scheme = isSsl ? "wss" : "ws";
+        if (isSsl && port == 443) {
+            return URI.create("wss://" + host + "/ws");
+        } else if (!isSsl && port == 80) {
+            return URI.create("ws://" + host + "/ws");
         } else {
-            wsUri = URI.create("ws://" + host + ":" + port + "/ws");
+            return URI.create(scheme + "://" + host + ":" + port + "/ws");
         }
+    }
 
+    private void connectWebSocket() throws IOException {
+        URI wsUri = buildWebSocketUri();
         log.info("Conectando vía WebSocket seguro a {}...", wsUri);
 
         WebSocket.Listener wsListener = new WebSocket.Listener() {

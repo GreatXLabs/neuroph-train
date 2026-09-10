@@ -15,6 +15,7 @@ buildNumber.properties
 client-cache/
 dist/
 *.nnet
+client.properties
 
 # Environment & Secrets
 .env

@@ -55,7 +55,18 @@ public class ClientConfig {
     }
 
     public void setServerHost(String serverHost) {
-        this.serverHost = serverHost;
+        if (serverHost != null) {
+            String clean = serverHost.trim();
+            if (clean.startsWith("https://")) clean = clean.substring(8);
+            else if (clean.startsWith("http://")) clean = clean.substring(7);
+            else if (clean.startsWith("wss://")) clean = clean.substring(6);
+            else if (clean.startsWith("ws://")) clean = clean.substring(5);
+            if (clean.endsWith("/ws")) clean = clean.substring(0, clean.length() - 3);
+            while (clean.endsWith("/")) clean = clean.substring(0, clean.length() - 1);
+            this.serverHost = clean;
+        } else {
+            this.serverHost = "neuroph.aguilucho.ar";
+        }
     }
 
     public int getServerPort() {
