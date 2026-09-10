@@ -140,8 +140,28 @@ public class ClientHandler implements Runnable {
                 handlePauseCampaign(message);
                 break;
 
+            case ADMIN_RESUME_CAMPAIGN:
+                handleResumeCampaign(message);
+                break;
+
             case ADMIN_STOP_CAMPAIGN:
                 handleStopCampaign(message);
+                break;
+
+            case ADMIN_CREATE_PROJECT:
+                handleCreateProject(message);
+                break;
+
+            case ADMIN_LIST_PROJECTS:
+                handleListProjects(message);
+                break;
+
+            case ADMIN_GET_PROJECT_LEADERBOARD:
+                handleGetProjectLeaderboard(message);
+                break;
+
+            case ADMIN_GET_DATASET_LEADERBOARD:
+                handleGetDatasetLeaderboard(message);
                 break;
 
             case ADMIN_GET_STATUS:
@@ -168,10 +188,10 @@ public class ClientHandler implements Runnable {
         if (config.getAdminToken().equals(token)) {
             isAdminAuthenticated = true;
             log.info("Cliente autenticado exitosamente como Administrador desde {}", socket.getRemoteSocketAddress());
-            sendMessage(Message.of(MessageType.AUTH_RESPONSE, "AUTH_OK"));
+            sendMessage(Message.responseTo(message, MessageType.AUTH_RESPONSE, "AUTH_OK"));
         } else {
             log.warn("Intento fallido de autenticación de Administrador desde {}", socket.getRemoteSocketAddress());
-            sendMessage(Message.of(MessageType.AUTH_RESPONSE, "AUTH_FAILED"));
+            sendMessage(Message.responseTo(message, MessageType.AUTH_RESPONSE, "AUTH_FAILED"));
         }
     }
 
@@ -189,7 +209,7 @@ public class ClientHandler implements Runnable {
         Map<String, Object> resp = new HashMap<>();
         resp.put("workerId", id);
         resp.put("status", "REGISTERED");
-        sendMessage(Message.of(MessageType.WORKER_REGISTER_ACK, JsonUtil.toJson(resp)));
+        sendMessage(Message.responseTo(message, MessageType.WORKER_REGISTER_ACK, JsonUtil.toJson(resp)));
 
         triggerDispatch();
     }
@@ -207,16 +227,16 @@ public class ClientHandler implements Runnable {
         if (registeredWorkerId != null) {
             workerRegistry.recordHeartbeat(registeredWorkerId);
         }
-        sendMessage(Message.of(MessageType.HEARTBEAT_ACK, "ACK"));
+        sendMessage(Message.responseTo(message, MessageType.HEARTBEAT_ACK, "ACK"));
     }
 
     private void handleSyncDataset(Message message) throws IOException {
         String datasetId = message.getPayload();
         DatasetMetadata meta = storageManager.getDataset(datasetId);
         if (meta != null) {
-            sendMessage(Message.of(MessageType.SYNC_DATASET_RESPONSE, JsonUtil.toJson(meta)));
+            sendMessage(Message.responseTo(message, MessageType.SYNC_DATASET_RESPONSE, JsonUtil.toJson(meta)));
         } else {
-            sendMessage(Message.error("Dataset no encontrado: " + datasetId));
+            sendMessage(Message.errorTo(message, "Dataset no encontrado: " + datasetId));
         }
     }
 
@@ -237,13 +257,13 @@ public class ClientHandler implements Runnable {
 
     private void handleUploadDataset(Message message) throws IOException {
         if (!isAdminAuthenticated) {
-            sendMessage(Message.error("No autorizado. Requiere ADMIN_TOKEN"));
+            sendMessage(Message.errorTo(message, "No autorizado. Requiere ADMIN_TOKEN"));
             return;
         }
 
         DatasetMetadata meta = JsonUtil.fromJson(message.getPayload(), DatasetMetadata.class);
         if (meta == null || meta.getCsvContent() == null) {
-            sendMessage(Message.error("Dataset o CSV inválido"));
+            sendMessage(Message.errorTo(message, "Dataset o CSV inválido"));
             return;
         }
 
@@ -251,37 +271,82 @@ public class ClientHandler implements Runnable {
         log.info("Nuevo dataset subido por Admin: [{}] ({} filas, {} entradas, {} salidas)",
                 meta.getName(), meta.getNumRows(), meta.getInputCount(), meta.getOutputCount());
 
-        sendMessage(Message.success("Dataset " + meta.getId() + " guardado exitosamente"));
+        sendMessage(Message.successTo(message, "Dataset " + meta.getId() + " guardado exitosamente"));
     }
 
     private void handleStartCampaign(Message message) throws IOException {
         if (!isAdminAuthenticated) {
-            sendMessage(Message.error("No autorizado"));
+            sendMessage(Message.errorTo(message, "No autorizado"));
             return;
         }
 
         CampaignConfig campaignConfig = JsonUtil.fromJson(message.getPayload(), CampaignConfig.class);
         campaignOrchestrator.startCampaign(campaignConfig);
         triggerDispatch();
-        sendMessage(Message.success("Campaña iniciada"));
+        sendMessage(Message.successTo(message, "Campaña iniciada"));
     }
 
     private void handlePauseCampaign(Message message) throws IOException {
         if (!isAdminAuthenticated) {
-            sendMessage(Message.error("No autorizado"));
+            sendMessage(Message.errorTo(message, "No autorizado"));
             return;
         }
-        campaignOrchestrator.pauseCampaign();
-        sendMessage(Message.success("Campaña pausada"));
+        String campaignId = (message.getPayload() != null && !message.getPayload().isBlank()) ? message.getPayload().trim() : null;
+        campaignOrchestrator.pauseCampaign(campaignId);
+        sendMessage(Message.successTo(message, "Campaña pausada"));
+    }
+
+    private void handleResumeCampaign(Message message) throws IOException {
+        if (!isAdminAuthenticated) {
+            sendMessage(Message.errorTo(message, "No autorizado"));
+            return;
+        }
+        String campaignId = (message.getPayload() != null && !message.getPayload().isBlank()) ? message.getPayload().trim() : null;
+        campaignOrchestrator.resumeCampaign(campaignId);
+        triggerDispatch();
+        sendMessage(Message.successTo(message, "Campaña reanudada"));
     }
 
     private void handleStopCampaign(Message message) throws IOException {
         if (!isAdminAuthenticated) {
-            sendMessage(Message.error("No autorizado"));
+            sendMessage(Message.errorTo(message, "No autorizado"));
             return;
         }
-        campaignOrchestrator.stopCampaign();
-        sendMessage(Message.success("Campaña detenida"));
+        String campaignId = (message.getPayload() != null && !message.getPayload().isBlank()) ? message.getPayload().trim() : null;
+        campaignOrchestrator.stopCampaign(campaignId);
+        sendMessage(Message.successTo(message, "Campaña detenida"));
+    }
+
+    private void handleCreateProject(Message message) throws IOException {
+        if (!isAdminAuthenticated) {
+            sendMessage(Message.errorTo(message, "No autorizado"));
+            return;
+        }
+        String name = message.getPayload();
+        if (name == null || name.trim().isEmpty()) {
+            sendMessage(Message.errorTo(message, "El nombre del proyecto no puede estar vacío"));
+            return;
+        }
+        com.neuroph.train.common.model.Project proj = storageManager.getOrCreateProject(name.trim());
+        log.info("Proyecto registrado o consultado: [{}] ({})", proj.getName(), proj.getId());
+        sendMessage(Message.successTo(message, JsonUtil.toJson(proj)));
+    }
+
+    private void handleListProjects(Message message) throws IOException {
+        List<com.neuroph.train.common.model.Project> list = storageManager.listProjects();
+        sendMessage(Message.successTo(message, JsonUtil.toJson(list)));
+    }
+
+    private void handleGetProjectLeaderboard(Message message) throws IOException {
+        String projectId = (message.getPayload() != null && !message.getPayload().isBlank()) ? message.getPayload().trim() : null;
+        List<TaskResult> lb = storageManager.getLeaderboardByProject(projectId);
+        sendMessage(Message.successTo(message, JsonUtil.toJson(lb)));
+    }
+
+    private void handleGetDatasetLeaderboard(Message message) throws IOException {
+        String datasetId = (message.getPayload() != null && !message.getPayload().isBlank()) ? message.getPayload().trim() : null;
+        List<TaskResult> lb = storageManager.getLeaderboardByDataset(datasetId);
+        sendMessage(Message.successTo(message, JsonUtil.toJson(lb)));
     }
 
     private void handleGetStatus(Message message) throws IOException {
@@ -293,9 +358,11 @@ public class ClientHandler implements Runnable {
         status.put("runningTasks", taskManager.getRunningCount());
         status.put("completedTasks", taskManager.getCompletedCount());
         status.put("activeCampaign", campaignOrchestrator.getActiveCampaign());
+        status.put("activeCampaigns", campaignOrchestrator.getActiveCampaigns());
+        status.put("projects", storageManager.listProjects());
         status.put("datasets", storageManager.listDatasets());
 
-        sendMessage(Message.of(MessageType.SUCCESS_RESPONSE, JsonUtil.toJson(status)));
+        sendMessage(Message.successTo(message, JsonUtil.toJson(status)));
     }
 
     private void handleGetLeaderboard(Message message) throws IOException {
@@ -305,7 +372,7 @@ public class ClientHandler implements Runnable {
         }
 
         List<TaskResult> lb = (campaignId != null) ? storageManager.getLeaderboard(campaignId) : List.of();
-        sendMessage(Message.of(MessageType.SUCCESS_RESPONSE, JsonUtil.toJson(lb)));
+        sendMessage(Message.successTo(message, JsonUtil.toJson(lb)));
     }
 
     private void handleDownloadModel(Message message) throws IOException {
@@ -316,9 +383,9 @@ public class ClientHandler implements Runnable {
         try {
             byte[] nnetBytes = storageManager.getModelNnetBytes(campId, taskId);
             String b64 = Base64.getEncoder().encodeToString(nnetBytes);
-            sendMessage(Message.of(MessageType.SUCCESS_RESPONSE, b64));
+            sendMessage(Message.successTo(message, b64));
         } catch (IOException e) {
-            sendMessage(Message.error("No se pudo cargar el archivo .nnet: " + e.getMessage()));
+            sendMessage(Message.errorTo(message, "No se pudo cargar el archivo .nnet: " + e.getMessage()));
         }
     }
 

@@ -335,13 +335,46 @@ public class ServerConnection {
         return sendRequest(msg).thenApply(Message::getPayload);
     }
 
+    public CompletableFuture<String> createProject(String projectName) {
+        Message msg = Message.of(MessageType.ADMIN_CREATE_PROJECT, projectName != null ? projectName : "");
+        return sendRequest(msg).thenApply(Message::getPayload);
+    }
+
+    public CompletableFuture<String> listProjects() {
+        Message msg = Message.of(MessageType.ADMIN_LIST_PROJECTS, "");
+        return sendRequest(msg).thenApply(Message::getPayload);
+    }
+
+    public CompletableFuture<String> getProjectLeaderboard(String projectId) {
+        Message msg = Message.of(MessageType.ADMIN_GET_PROJECT_LEADERBOARD, projectId != null ? projectId : "");
+        return sendRequest(msg).thenApply(Message::getPayload);
+    }
+
+    public CompletableFuture<String> getDatasetLeaderboard(String datasetId) {
+        Message msg = Message.of(MessageType.ADMIN_GET_DATASET_LEADERBOARD, datasetId != null ? datasetId : "");
+        return sendRequest(msg).thenApply(Message::getPayload);
+    }
+
     public CompletableFuture<String> pauseCampaign() {
-        Message msg = Message.of(MessageType.ADMIN_PAUSE_CAMPAIGN, "");
+        return pauseCampaign(null);
+    }
+
+    public CompletableFuture<String> pauseCampaign(String campaignId) {
+        Message msg = Message.of(MessageType.ADMIN_PAUSE_CAMPAIGN, campaignId != null ? campaignId : "");
+        return sendRequest(msg).thenApply(Message::getPayload);
+    }
+
+    public CompletableFuture<String> resumeCampaign(String campaignId) {
+        Message msg = Message.of(MessageType.ADMIN_RESUME_CAMPAIGN, campaignId != null ? campaignId : "");
         return sendRequest(msg).thenApply(Message::getPayload);
     }
 
     public CompletableFuture<String> stopCampaign() {
-        Message msg = Message.of(MessageType.ADMIN_STOP_CAMPAIGN, "");
+        return stopCampaign(null);
+    }
+
+    public CompletableFuture<String> stopCampaign(String campaignId) {
+        Message msg = Message.of(MessageType.ADMIN_STOP_CAMPAIGN, campaignId != null ? campaignId : "");
         return sendRequest(msg).thenApply(Message::getPayload);
     }
 
@@ -363,7 +396,18 @@ public class ServerConnection {
 
     public CompletableFuture<DatasetMetadata> requestDatasetSync(String datasetId) {
         Message msg = Message.of(MessageType.SYNC_DATASET_REQUEST, datasetId);
-        return sendRequest(msg).thenApply(resp -> JsonUtil.fromJson(resp.getPayload(), DatasetMetadata.class));
+        return sendRequest(msg).thenApply(resp -> {
+            if (resp.getType() == MessageType.ERROR_RESPONSE || resp.getType() != MessageType.SYNC_DATASET_RESPONSE) {
+                log.warn("Error o respuesta no esperada en sincronización de dataset: {}", resp.getPayload());
+                return null;
+            }
+            try {
+                return JsonUtil.fromJson(resp.getPayload(), DatasetMetadata.class);
+            } catch (Exception e) {
+                log.error("Error parseando DatasetMetadata: {}", e.getMessage());
+                return null;
+            }
+        });
     }
 
     public synchronized void disconnect(String reason) {

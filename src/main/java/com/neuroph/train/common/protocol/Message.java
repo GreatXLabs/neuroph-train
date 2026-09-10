@@ -43,6 +43,24 @@ public class Message {
         return new Message(MessageType.SUCCESS_RESPONSE, payload);
     }
 
+    public static Message responseTo(Message request, MessageType type, String payload) {
+        Message msg = new Message(type, payload);
+        if (request != null && request.getId() != null) {
+            msg.setId(request.getId());
+        }
+        return msg;
+    }
+
+    public static Message successTo(Message request, String payload) {
+        return responseTo(request, MessageType.SUCCESS_RESPONSE, payload);
+    }
+
+    public static Message errorTo(Message request, String errorDescription) {
+        Message msg = responseTo(request, MessageType.ERROR_RESPONSE, null);
+        msg.setError(errorDescription);
+        return msg;
+    }
+
     // Getters y Setters
     public String getId() {
         return id;

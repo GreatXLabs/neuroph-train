@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,19 +22,23 @@ import java.util.concurrent.ConcurrentHashMap;
 public class StorageManager {
 
     private final File baseDir;
+    private final File projectsDir;
     private final File datasetsDir;
     private final File modelsDir;
     private final File campaignsDir;
 
+    private final Map<String, com.neuroph.train.common.model.Project> projectsCache = new ConcurrentHashMap<>();
     private final Map<String, DatasetMetadata> datasetsCache = new ConcurrentHashMap<>();
     private final Map<String, CampaignConfig> campaignsCache = new ConcurrentHashMap<>();
 
     public StorageManager(File baseDir) {
         this.baseDir = baseDir;
+        this.projectsDir = new File(baseDir, "projects");
         this.datasetsDir = new File(baseDir, "datasets");
         this.modelsDir = new File(baseDir, "models");
         this.campaignsDir = new File(baseDir, "campaigns");
 
+        projectsDir.mkdirs();
         datasetsDir.mkdirs();
         modelsDir.mkdirs();
         campaignsDir.mkdirs();
@@ -42,6 +47,30 @@ public class StorageManager {
     }
 
     private void loadExistingMetadata() {
+        // Cargar proyectos previos
+        File[] pFiles = projectsDir.listFiles((dir, name) -> name.endsWith(".json"));
+        if (pFiles != null) {
+            for (File f : pFiles) {
+                try {
+                    String json = Files.readString(f.toPath(), StandardCharsets.UTF_8);
+                    com.neuroph.train.common.model.Project proj = JsonUtil.fromJson(json, com.neuroph.train.common.model.Project.class);
+                    if (proj != null && proj.getId() != null) {
+                        projectsCache.put(proj.getId(), proj);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        // Si no hay proyectos, crear el proyecto por defecto
+        if (projectsCache.isEmpty()) {
+            com.neuroph.train.common.model.Project def = new com.neuroph.train.common.model.Project("default-project", "Proyecto Principal");
+            try {
+                saveProject(def);
+            } catch (IOException ignored) {
+            }
+        }
+
         // Cargar datasets previos
         File[] dFiles = datasetsDir.listFiles((dir, name) -> name.endsWith("_meta.json"));
         if (dFiles != null) {
@@ -50,7 +79,16 @@ public class StorageManager {
                     String json = Files.readString(f.toPath(), StandardCharsets.UTF_8);
                     DatasetMetadata meta = JsonUtil.fromJson(json, DatasetMetadata.class);
                     if (meta != null && meta.getId() != null) {
+                        if (meta.getProjectId() == null || meta.getProjectId().isEmpty()) {
+                            meta.setProjectId("default-project");
+                        }
                         datasetsCache.put(meta.getId(), meta);
+
+                        // Asociar al proyecto en cache
+                        com.neuroph.train.common.model.Project p = projectsCache.get(meta.getProjectId());
+                        if (p != null) {
+                            p.addDatasetId(meta.getId());
+                        }
                     }
                 } catch (Exception ignored) {
                 }
@@ -73,9 +111,59 @@ public class StorageManager {
         }
     }
 
+    // --- Proyectos ---
+
+    public synchronized void saveProject(com.neuroph.train.common.model.Project project) throws IOException {
+        projectsCache.put(project.getId(), project);
+        File file = new File(projectsDir, project.getId() + ".json");
+        Files.writeString(file.toPath(), JsonUtil.toPrettyJson(project), StandardCharsets.UTF_8);
+    }
+
+    public com.neuroph.train.common.model.Project getProject(String projectId) {
+        return projectsCache.get(projectId);
+    }
+
+    public List<com.neuroph.train.common.model.Project> listProjects() {
+        return new ArrayList<>(projectsCache.values());
+    }
+
+    public synchronized com.neuroph.train.common.model.Project getOrCreateProject(String name) throws IOException {
+        if (name == null || name.trim().isEmpty()) {
+            name = "Proyecto Principal";
+        }
+        for (com.neuroph.train.common.model.Project p : projectsCache.values()) {
+            if (name.trim().equalsIgnoreCase(p.getName().trim())) {
+                return p;
+            }
+        }
+        com.neuroph.train.common.model.Project newProj = new com.neuroph.train.common.model.Project(name.trim());
+        saveProject(newProj);
+        return newProj;
+    }
+
+    public List<DatasetMetadata> listDatasetsByProject(String projectId) {
+        List<DatasetMetadata> list = new ArrayList<>();
+        for (DatasetMetadata d : datasetsCache.values()) {
+            if (projectId == null || projectId.isEmpty() || projectId.equals(d.getProjectId())) {
+                list.add(d);
+            }
+        }
+        return list;
+    }
+
     // --- Datasets ---
 
     public synchronized void saveDataset(DatasetMetadata meta, String csvContent) throws IOException {
+        if (meta.getProjectId() == null || meta.getProjectId().isEmpty()) {
+            meta.setProjectId("default-project");
+        }
+        com.neuroph.train.common.model.Project p = projectsCache.get(meta.getProjectId());
+        if (p != null) {
+            p.addDatasetId(meta.getId());
+            meta.setProjectName(p.getName());
+            saveProject(p);
+        }
+
         datasetsCache.put(meta.getId(), meta);
 
         File metaFile = new File(datasetsDir, meta.getId() + "_meta.json");
@@ -125,6 +213,19 @@ public class StorageManager {
 
     public synchronized void saveModelResult(TaskResult result) throws IOException {
         String campaignId = result.getCampaignId() != null ? result.getCampaignId() : "default";
+        CampaignConfig camp = campaignsCache.get(campaignId);
+        if (camp != null) {
+            if (result.getProjectId() == null || "default-project".equals(result.getProjectId())) {
+                result.setProjectId(camp.getProjectId());
+            }
+            if (result.getDatasetId() == null) {
+                result.setDatasetId(camp.getDatasetId());
+            }
+            if (result.getDatasetName() == null) {
+                result.setDatasetName(camp.getDatasetName());
+            }
+        }
+
         File campModelsDir = new File(modelsDir, campaignId);
         campModelsDir.mkdirs();
 
@@ -194,6 +295,51 @@ public class StorageManager {
             }
         }
         return list;
+    }
+
+    public List<TaskResult> getLeaderboardByDataset(String datasetId) {
+        List<TaskResult> combined = new ArrayList<>();
+        for (CampaignConfig camp : campaignsCache.values()) {
+            if (datasetId != null && datasetId.equals(camp.getDatasetId())) {
+                combined.addAll(getLeaderboard(camp.getCampaignId()));
+            }
+        }
+        sortLeaderboard(combined);
+        return combined;
+    }
+
+    public List<TaskResult> getLeaderboardByProject(String projectId) {
+        List<TaskResult> combined = new ArrayList<>();
+        for (CampaignConfig camp : campaignsCache.values()) {
+            if (projectId != null && projectId.equals(camp.getProjectId())) {
+                combined.addAll(getLeaderboard(camp.getCampaignId()));
+            }
+        }
+        sortLeaderboard(combined);
+        return combined;
+    }
+
+    public Map<String, TaskResult> getBestModelPerDataset(String projectId) {
+        Map<String, TaskResult> bestMap = new HashMap<>();
+        List<DatasetMetadata> datasets = listDatasetsByProject(projectId);
+        for (DatasetMetadata d : datasets) {
+            List<TaskResult> dsResults = getLeaderboardByDataset(d.getId());
+            if (!dsResults.isEmpty()) {
+                bestMap.put(d.getId(), dsResults.get(0));
+            }
+        }
+        return bestMap;
+    }
+
+    private void sortLeaderboard(List<TaskResult> list) {
+        list.sort((a, b) -> {
+            if (a.getMetrics() == null && b.getMetrics() == null) return 0;
+            if (a.getMetrics() == null) return 1;
+            if (b.getMetrics() == null) return -1;
+            int cmpAcc = Double.compare(b.getMetrics().getAccuracy(), a.getMetrics().getAccuracy());
+            if (cmpAcc != 0) return cmpAcc;
+            return Double.compare(a.getMetrics().getRmse(), b.getMetrics().getRmse());
+        });
     }
 
     public byte[] getModelNnetBytes(String campaignId, String taskId) throws IOException {

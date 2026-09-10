@@ -12,7 +12,9 @@ public class CampaignConfig {
 
     private String campaignId;
     private String name;
+    private String projectId = "default-project";
     private String datasetId;
+    private String datasetName;
     private HeuristicType heuristicType = HeuristicType.GUIDED;
 
     // Rango de búsqueda de topología
@@ -67,12 +69,28 @@ public class CampaignConfig {
         this.name = name;
     }
 
+    public String getProjectId() {
+        return projectId != null ? projectId : "default-project";
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
     public String getDatasetId() {
         return datasetId;
     }
 
     public void setDatasetId(String datasetId) {
         this.datasetId = datasetId;
+    }
+
+    public String getDatasetName() {
+        return datasetName;
+    }
+
+    public void setDatasetName(String datasetName) {
+        this.datasetName = datasetName;
     }
 
     public HeuristicType getHeuristicType() {

@@ -156,6 +156,9 @@ public class WorkerEngine {
                 TaskResult result = new TaskResult();
                 result.setTaskId(taskId);
                 result.setCampaignId(task.getCampaignId());
+                result.setProjectId(task.getProjectId());
+                result.setDatasetId(task.getDatasetId());
+                result.setDatasetName(task.getDatasetName());
                 result.setNetworkConfig(task.getNetworkConfig());
                 result.setMetrics(metrics);
                 result.setNnetBase64(nnetBase64);

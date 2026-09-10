@@ -11,10 +11,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Orquestador principal del ciclo de vida de campañas y evolución heurística de modelos.
+ * Orquestador principal multientrenamiento: gestiona el ciclo de vida independiente
+ * de múltiples campañas heurísticas en paralelo sobre diferentes datasets.
  */
 public class CampaignOrchestrator {
 
@@ -23,10 +27,41 @@ public class CampaignOrchestrator {
     private final StorageManager storageManager;
     private final TaskManager taskManager;
 
-    private volatile CampaignConfig activeCampaign;
-    private volatile DatasetMetadata activeDataset;
-    private HeuristicStrategy strategy;
-    private volatile boolean isRunning = false;
+    public static class CampaignContext {
+        private final CampaignConfig config;
+        private final DatasetMetadata dataset;
+        private final HeuristicStrategy strategy;
+        private volatile boolean running;
+
+        public CampaignContext(CampaignConfig config, DatasetMetadata dataset, HeuristicStrategy strategy) {
+            this.config = config;
+            this.dataset = dataset;
+            this.strategy = strategy;
+            this.running = true;
+        }
+
+        public CampaignConfig getConfig() {
+            return config;
+        }
+
+        public DatasetMetadata getDataset() {
+            return dataset;
+        }
+
+        public HeuristicStrategy getStrategy() {
+            return strategy;
+        }
+
+        public boolean isRunning() {
+            return running;
+        }
+
+        public void setRunning(boolean running) {
+            this.running = running;
+        }
+    }
+
+    private final Map<String, CampaignContext> activeCampaigns = new ConcurrentHashMap<>();
 
     public CampaignOrchestrator(StorageManager storageManager, TaskManager taskManager) {
         this.storageManager = storageManager;
@@ -39,34 +74,40 @@ public class CampaignOrchestrator {
             throw new IllegalArgumentException("Dataset no encontrado: " + campaignConfig.getDatasetId());
         }
 
-        this.activeCampaign = campaignConfig;
-        this.activeDataset = meta;
-        this.activeCampaign.setStatus("RUNNING");
-        this.isRunning = true;
+        // Asociar metadatos del dataset y proyecto a la campaña
+        campaignConfig.setDatasetName(meta.getName());
+        if (campaignConfig.getProjectId() == null || "default-project".equals(campaignConfig.getProjectId())) {
+            campaignConfig.setProjectId(meta.getProjectId());
+        }
+        campaignConfig.setStatus("RUNNING");
 
         // Seleccionar estrategia heurística
+        HeuristicStrategy strategy;
         if (campaignConfig.getHeuristicType() == HeuristicType.EVOLUTIONARY) {
-            this.strategy = new EvolutionaryStrategy();
+            strategy = new EvolutionaryStrategy();
         } else {
-            this.strategy = new GuidedSearchStrategy();
+            strategy = new GuidedSearchStrategy();
         }
 
         storageManager.saveCampaign(campaignConfig);
 
-        log.info("Iniciando campaña [{}] con estrategia {} sobre dataset [{}]",
-                campaignConfig.getName(), campaignConfig.getHeuristicType(), meta.getName());
+        CampaignContext ctx = new CampaignContext(campaignConfig, meta, strategy);
+        activeCampaigns.put(campaignConfig.getCampaignId(), ctx);
+
+        log.info("Iniciando campaña [{}] (ID: {}) para dataset [{}] (Proyecto: {}) con {}",
+                campaignConfig.getName(), campaignConfig.getCampaignId(), meta.getName(),
+                campaignConfig.getProjectId(), campaignConfig.getHeuristicType());
 
         // Generar lote inicial de tareas
         List<TrainingTask> initialTasks = strategy.initializeCampaign(campaignConfig, meta);
         prepareTasks(initialTasks, campaignConfig, meta);
         taskManager.enqueueTasks(initialTasks);
-        log.info("Encoladas {} tareas iniciales de exploración", initialTasks.size());
+        log.info("Campaña [{}] encoló {} tareas iniciales de exploración", campaignConfig.getName(), initialTasks.size());
     }
 
     public synchronized void onTaskCompleted(TaskResult result) {
-        if (!isRunning || activeCampaign == null) {
-            return;
-        }
+        String campId = result.getCampaignId();
+        CampaignContext ctx = activeCampaigns.get(campId);
 
         try {
             storageManager.saveModelResult(result);
@@ -74,40 +115,43 @@ public class CampaignOrchestrator {
             log.error("Error guardando resultado del modelo {}: {}", result.getTaskId(), e.getMessage());
         }
 
-        List<TaskResult> campaignHistory = taskManager.getResultsForCampaign(activeCampaign.getCampaignId());
-        int totalCompleted = campaignHistory.size();
-
-        log.info("Tarea {} completada por [{}] | Metrics: {} | Total completadas: {}/{}",
-                result.getTaskId(), result.getWorkerName(),
-                result.getMetrics() != null ? result.getMetrics().toString() : "sin métricas",
-                totalCompleted, activeCampaign.getMaxTotalTasks());
-
-        // Comprobar criterio de parada: target error o límite de tareas
-        boolean targetReached = false;
-        if (result.getMetrics() != null && result.getMetrics().getRmse() <= activeCampaign.getTargetError()) {
-            targetReached = true;
-            log.info("¡Objetivo de error alcanzado! RMSE={} <= {}",
-                    result.getMetrics().getRmse(), activeCampaign.getTargetError());
-        }
-
-        if (totalCompleted >= activeCampaign.getMaxTotalTasks() || targetReached) {
-            completeCampaign();
+        if (ctx == null || !ctx.isRunning()) {
             return;
         }
 
-        // Si la cola de tareas pendientes tiene pocas tareas (< 3), pedirle a la heurística el siguiente lote
-        if (taskManager.getPendingCount() <= 2) {
-            List<TrainingTask> nextBatch = strategy.onTasksCompleted(
-                    activeCampaign, activeDataset, List.of(result), campaignHistory);
+        List<TaskResult> campaignHistory = taskManager.getResultsForCampaign(campId);
+        int totalCompleted = campaignHistory.size();
 
-            // Filtrar para no exceder maxTotalTasks
-            int remaining = activeCampaign.getMaxTotalTasks() - (totalCompleted + taskManager.getRunningCount() + taskManager.getPendingCount());
+        log.info("Tarea {} (Campaña: {}) completada por [{}] | Metrics: {} | Total completadas: {}/{}",
+                result.getTaskId(), campId, result.getWorkerName(),
+                result.getMetrics() != null ? result.getMetrics().toString() : "sin métricas",
+                totalCompleted, ctx.config.getMaxTotalTasks());
+
+        // Comprobar criterio de parada: target error o límite de tareas
+        boolean targetReached = false;
+        if (result.getMetrics() != null && result.getMetrics().getRmse() <= ctx.config.getTargetError()) {
+            targetReached = true;
+            log.info("¡Objetivo de error alcanzado para campaña [{}]! RMSE={} <= {}",
+                    ctx.config.getName(), result.getMetrics().getRmse(), ctx.config.getTargetError());
+        }
+
+        if (totalCompleted >= ctx.config.getMaxTotalTasks() || targetReached) {
+            completeCampaign(campId);
+            return;
+        }
+
+        // Si la cola de tareas pendientes para esta campaña tiene pocas tareas (<= 2), pedir el siguiente lote
+        if (taskManager.getPendingCount(campId) <= 2) {
+            List<TrainingTask> nextBatch = ctx.strategy.onTasksCompleted(
+                    ctx.config, ctx.dataset, List.of(result), campaignHistory);
+
+            int remaining = ctx.config.getMaxTotalTasks() - (totalCompleted + taskManager.getRunningCount(campId) + taskManager.getPendingCount(campId));
             if (remaining > 0 && !nextBatch.isEmpty()) {
                 int toAdd = Math.min(remaining, nextBatch.size());
                 List<TrainingTask> batchToAdd = nextBatch.subList(0, toAdd);
-                prepareTasks(batchToAdd, activeCampaign, activeDataset);
+                prepareTasks(batchToAdd, ctx.config, ctx.dataset);
                 taskManager.enqueueTasks(batchToAdd);
-                log.info("Heurística generó nuevo lote de {} tareas", toAdd);
+                log.info("Campaña [{}] generó nuevo lote de {} tareas", ctx.config.getName(), toAdd);
             }
         }
     }
@@ -115,6 +159,10 @@ public class CampaignOrchestrator {
     private void prepareTasks(List<TrainingTask> tasks, CampaignConfig campaign, DatasetMetadata dataset) {
         if (tasks == null) return;
         for (TrainingTask task : tasks) {
+            task.setCampaignId(campaign.getCampaignId());
+            task.setProjectId(campaign.getProjectId());
+            task.setDatasetId(campaign.getDatasetId());
+            task.setDatasetName(campaign.getDatasetName());
             task.setPatience(campaign.getPatience());
             task.setEnableAugmentation(campaign.isEnableAugmentation());
             task.setAugmentationFactor(campaign.getAugmentationFactor());
@@ -129,7 +177,7 @@ public class CampaignOrchestrator {
         }
 
         var config = task.getNetworkConfig();
-        java.util.List<Integer> layerSizes = new java.util.ArrayList<>();
+        List<Integer> layerSizes = new ArrayList<>();
         layerSizes.add(config.getInputNeurons());
         if (config.getHiddenNeurons() != null) {
             layerSizes.addAll(config.getHiddenNeurons());
@@ -147,56 +195,104 @@ public class CampaignOrchestrator {
         return totalConnections * maxIter * rows;
     }
 
-    public synchronized void pauseCampaign() {
-        if (activeCampaign != null) {
-            activeCampaign.setStatus("PAUSED");
-            this.isRunning = false;
+    public synchronized void pauseCampaign(String campaignId) {
+        CampaignContext ctx = resolveContext(campaignId);
+        if (ctx != null) {
+            ctx.setRunning(false);
+            ctx.getConfig().setStatus("PAUSED");
             try {
-                storageManager.saveCampaign(activeCampaign);
+                storageManager.saveCampaign(ctx.getConfig());
             } catch (IOException ignored) {}
-            log.info("Campaña [{}] pausada", activeCampaign.getName());
+            log.info("Campaña [{}] pausada", ctx.getConfig().getName());
+        }
+    }
+
+    public synchronized void pauseCampaign() {
+        pauseCampaign(null);
+    }
+
+    public synchronized void resumeCampaign(String campaignId) {
+        CampaignContext ctx = resolveContext(campaignId);
+        if (ctx != null) {
+            ctx.setRunning(true);
+            ctx.getConfig().setStatus("RUNNING");
+            try {
+                storageManager.saveCampaign(ctx.getConfig());
+            } catch (IOException ignored) {}
+            log.info("Campaña [{}] reanudada", ctx.getConfig().getName());
         }
     }
 
     public synchronized void resumeCampaign() {
-        if (activeCampaign != null) {
-            activeCampaign.setStatus("RUNNING");
-            this.isRunning = true;
+        resumeCampaign(null);
+    }
+
+    public synchronized void stopCampaign(String campaignId) {
+        CampaignContext ctx = resolveContext(campaignId);
+        if (ctx != null) {
+            ctx.setRunning(false);
+            ctx.getConfig().setStatus("STOPPED");
             try {
-                storageManager.saveCampaign(activeCampaign);
+                storageManager.saveCampaign(ctx.getConfig());
             } catch (IOException ignored) {}
-            log.info("Campaña [{}] reanudada", activeCampaign.getName());
+            taskManager.cancelTasksForCampaign(ctx.getConfig().getCampaignId());
+            activeCampaigns.remove(ctx.getConfig().getCampaignId());
+            log.info("Campaña [{}] detenida manualmente", ctx.getConfig().getName());
         }
     }
 
     public synchronized void stopCampaign() {
-        if (activeCampaign != null) {
-            activeCampaign.setStatus("STOPPED");
-            this.isRunning = false;
+        stopCampaign(null);
+    }
+
+    public synchronized void completeCampaign(String campaignId) {
+        CampaignContext ctx = activeCampaigns.get(campaignId);
+        if (ctx != null) {
+            ctx.setRunning(false);
+            ctx.getConfig().setStatus("COMPLETED");
             try {
-                storageManager.saveCampaign(activeCampaign);
+                storageManager.saveCampaign(ctx.getConfig());
             } catch (IOException ignored) {}
-            taskManager.clear();
-            log.info("Campaña [{}] detenida manualmente", activeCampaign.getName());
+            taskManager.cancelTasksForCampaign(campaignId);
+            activeCampaigns.remove(campaignId);
+            log.info("¡Campaña [{}] FINALIZADA exitosamente!", ctx.getConfig().getName());
         }
     }
 
-    private synchronized void completeCampaign() {
-        if (activeCampaign != null) {
-            activeCampaign.setStatus("COMPLETED");
-            this.isRunning = false;
-            try {
-                storageManager.saveCampaign(activeCampaign);
-            } catch (IOException ignored) {}
-            log.info("¡Campaña [{}] FINALIZADA exitosamente!", activeCampaign.getName());
+    private CampaignContext resolveContext(String campaignId) {
+        if (campaignId != null && !campaignId.isEmpty() && activeCampaigns.containsKey(campaignId)) {
+            return activeCampaigns.get(campaignId);
         }
+        if (!activeCampaigns.isEmpty()) {
+            return activeCampaigns.values().iterator().next();
+        }
+        return null;
     }
 
     public CampaignConfig getActiveCampaign() {
-        return activeCampaign;
+        for (CampaignContext ctx : activeCampaigns.values()) {
+            if (ctx.isRunning()) {
+                return ctx.getConfig();
+            }
+        }
+        if (!activeCampaigns.isEmpty()) {
+            return activeCampaigns.values().iterator().next().getConfig();
+        }
+        return null;
+    }
+
+    public List<CampaignConfig> getActiveCampaigns() {
+        List<CampaignConfig> list = new ArrayList<>();
+        for (CampaignContext ctx : activeCampaigns.values()) {
+            list.add(ctx.getConfig());
+        }
+        return list;
     }
 
     public boolean isRunning() {
-        return isRunning;
+        for (CampaignContext ctx : activeCampaigns.values()) {
+            if (ctx.isRunning()) return true;
+        }
+        return false;
     }
 }

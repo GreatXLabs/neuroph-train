@@ -8,6 +8,7 @@ import com.neuroph.train.common.model.DatasetMetadata;
 import com.neuroph.train.common.model.EvaluationMetrics;
 import com.neuroph.train.common.model.HeuristicType;
 import com.neuroph.train.common.model.NormalizationType;
+import com.neuroph.train.common.model.Project;
 import com.neuroph.train.common.model.TaskResult;
 import com.neuroph.train.common.model.TaskType;
 import com.neuroph.train.common.protocol.JsonUtil;
@@ -19,22 +20,25 @@ import javax.swing.border.TitledBorder;
 import javax.swing.table.DefaultTableModel;
 import javax.swing.table.TableColumn;
 import java.awt.*;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * Panel de Administración protegido por token: subida de datasets, configuración de campañas
- * y tabla de clasificación (Leaderboard) con descarga de modelos .nnet.
+ * Panel de Administracion protegido por token:
+ * - Gestion multi-proyecto y agrupacion de datasets
+ * - Subida de datasets con normalizacion granular y deteccion automatica
+ * - Control de campanas de entrenamiento concurrentes (Fair-Share Round-Robin)
+ * - Leaderboard por dataset o proyecto con descarga de modelos .nnet
+ * - Vista comparativa de rendimiento entre datasets del mismo proyecto
  */
 public class AdminPanel extends JPanel {
 
@@ -51,12 +55,18 @@ public class AdminPanel extends JPanel {
     // Vista Admin Dashboard
     private JTabbedPane adminTabs;
 
+    // Cache local de proyectos y datasets
+    private final List<Project> cachedProjects = new ArrayList<>();
+    private final List<DatasetMetadata> cachedDatasets = new ArrayList<>();
+    private final List<CampaignConfig> cachedActiveCampaigns = new ArrayList<>();
+
     // Subpestaña Datasets
+    private JComboBox<Project> uploadProjectCombo;
     private JTextField datasetNameField;
     private JComboBox<TaskType> taskTypeCombo;
     private JCheckBox hasHeaderCheckbox;
     private JTextField classLabelsField;
-    private JComboBox<NormalizationType> normCombo; // fallback global
+    private JComboBox<NormalizationType> normCombo;
     private File selectedCsvFile;
     private String cachedCsvContent;
     private JTable columnsTable;
@@ -67,7 +77,8 @@ public class AdminPanel extends JPanel {
     private JButton uploadButton;
 
     // Subpestaña Campaña
-    private JComboBox<String> datasetCombo;
+    private JComboBox<Project> campaignProjectCombo;
+    private JComboBox<DatasetMetadata> campaignDatasetCombo;
     private JComboBox<HeuristicType> heuristicCombo;
     private JSpinner minLayersSpinner;
     private JSpinner maxLayersSpinner;
@@ -81,17 +92,31 @@ public class AdminPanel extends JPanel {
     private JSpinner augmentationNoiseSpinner;
     private JSpinner maxTasksSpinner;
     private JButton startCampaignBtn;
+    private JTable activeCampaignsTable;
+    private DefaultTableModel activeCampaignsModel;
     private JButton pauseCampaignBtn;
+    private JButton resumeCampaignBtn;
     private JButton stopCampaignBtn;
     private JLabel campaignStatusLabel;
     private JLabel workersStatusLabel;
 
     // Subpestaña Leaderboard
+    private JComboBox<Project> lbProjectCombo;
+    private JComboBox<DatasetMetadata> lbDatasetCombo;
     private JTable leaderboardTable;
     private DefaultTableModel leaderboardModel;
     private JButton refreshLbButton;
     private JButton downloadNnetButton;
-    private List<TaskResult> currentLeaderboard = new ArrayList<>();
+    private final List<TaskResult> currentLeaderboard = new ArrayList<>();
+
+    // Subpestaña Comparativa de Datasets
+    private JComboBox<Project> compProjectCombo;
+    private JTable bestPerDatasetTable;
+    private DefaultTableModel bestPerDatasetModel;
+    private final List<TaskResult> currentBestPerDataset = new ArrayList<>();
+    private JTable unifiedProjectTable;
+    private DefaultTableModel unifiedProjectModel;
+    private final List<TaskResult> currentUnifiedProject = new ArrayList<>();
 
     public AdminPanel(ServerConnection connection) {
         this.connection = connection;
@@ -112,12 +137,12 @@ public class AdminPanel extends JPanel {
         loginPanel.setBorder(new EmptyBorder(40, 40, 40, 40));
 
         JPanel box = new JPanel(new GridLayout(4, 1, 10, 10));
-        box.setBorder(new TitledBorder("Autenticación de Administrador (Dokploy / VPS)"));
+        box.setBorder(new TitledBorder("Autenticacion de Administrador (Dokploy / VPS)"));
         box.setPreferredSize(new Dimension(380, 200));
 
         box.add(new JLabel("Introduce el ADMIN_TOKEN configurado en el servidor:", SwingConstants.CENTER));
         tokenField = new JPasswordField(15);
-        tokenField.setToolTipText("Introduce la clave secreta ADMIN_TOKEN configurada en el servidor (Dokploy/VPS)");
+        tokenField.setToolTipText("Introduce la clave secreta ADMIN_TOKEN configurada en el servidor");
         box.add(tokenField);
 
         loginButton = new JButton("Acceder al Panel de Control");
@@ -126,7 +151,7 @@ public class AdminPanel extends JPanel {
         loginButton.setToolTipText("Valida las credenciales de administrador para desbloquear el panel de control");
         box.add(loginButton);
 
-        loginStatusLabel = new JLabel("Requiere conexión activa previa al servidor", SwingConstants.CENTER);
+        loginStatusLabel = new JLabel("Requiere conexion activa previa al servidor", SwingConstants.CENTER);
         loginStatusLabel.setForeground(Color.GRAY);
         box.add(loginStatusLabel);
 
@@ -138,14 +163,14 @@ public class AdminPanel extends JPanel {
 
     private void attemptLogin() {
         if (!connection.isConnected()) {
-            loginStatusLabel.setText("Primero conecta el cliente en la pestaña Worker");
+            loginStatusLabel.setText("Primero conecta el cliente en la pestana Worker");
             loginStatusLabel.setForeground(Color.RED);
             return;
         }
 
         String token = new String(tokenField.getPassword()).trim();
         if (token.isEmpty()) {
-            loginStatusLabel.setText("El token no puede estar vacío");
+            loginStatusLabel.setText("El token no puede estar vacio");
             loginStatusLabel.setForeground(Color.RED);
             return;
         }
@@ -156,10 +181,9 @@ public class AdminPanel extends JPanel {
         connection.authenticateAdmin(token).thenAccept(ok -> SwingUtilities.invokeLater(() -> {
             if (ok) {
                 cardLayout.show(cardContainer, "DASHBOARD");
-                refreshServerDatasets();
-                refreshLeaderboard();
+                refreshServerProjectsAndDatasets(this::refreshLeaderboard);
             } else {
-                loginStatusLabel.setText("Token inválido");
+                loginStatusLabel.setText("Token invalido");
                 loginStatusLabel.setForeground(Color.RED);
             }
         })).exceptionally(ex -> {
@@ -175,74 +199,88 @@ public class AdminPanel extends JPanel {
         adminTabs = new JTabbedPane();
 
         adminTabs.addTab("Cargar Datasets", buildDatasetsTab());
-        adminTabs.setToolTipTextAt(0, "Subida e inspección de datasets CSV con configuración granular de columnas");
+        adminTabs.setToolTipTextAt(0, "Subida e inspeccion de datasets CSV asociados a proyectos");
 
-        adminTabs.addTab("Control de Campaña", buildCampaignTab());
-        adminTabs.setToolTipTextAt(1, "Configuración y lanzamiento de campañas heurísticas y monitoreo del cluster");
+        adminTabs.addTab("Control de Campanas", buildCampaignTab());
+        adminTabs.setToolTipTextAt(1, "Configuracion, inicio y control concurrente de campanas de entrenamiento");
 
         adminTabs.addTab("Leaderboard & Modelos .nnet", buildLeaderboardTab());
-        adminTabs.setToolTipTextAt(2, "Ranking de redes neuronales entrenadas, prueba de inferencia y descarga .nnet");
+        adminTabs.setToolTipTextAt(2, "Ranking de modelos neuronales por proyecto o dataset con descarga .nnet");
+
+        adminTabs.addTab("Comparativa de Datasets", buildComparisonTab());
+        adminTabs.setToolTipTextAt(3, "Comparativa de rendimiento entre datasets del mismo proyecto");
 
         cardContainer.add(adminTabs, "DASHBOARD");
     }
 
-    // --- Subpestaña Datasets ---
+    // --- Subpestaña 1: Cargar Datasets ---
     private JPanel buildDatasetsTab() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        JPanel form = new JPanel(new GridLayout(4, 2, 8, 8));
-        form.setBorder(new TitledBorder("1. Archivo y Configuración General"));
+        JPanel form = new JPanel(new GridLayout(5, 2, 8, 8));
+        form.setBorder(new TitledBorder("1. Proyecto y Archivo"));
+
+        form.add(new JLabel("Proyecto Asociado:"));
+        JPanel projectSelectPanel = new JPanel(new BorderLayout(5, 0));
+        uploadProjectCombo = new JComboBox<>();
+        uploadProjectCombo.setToolTipText("Selecciona el proyecto al que pertenecera este dataset");
+        JButton newProjectBtn = new JButton("+ Nuevo Proyecto...");
+        newProjectBtn.setToolTipText("Crea un nuevo proyecto con solo un nombre para agrupar datasets");
+        newProjectBtn.addActionListener(e -> promptCreateProject());
+        projectSelectPanel.add(uploadProjectCombo, BorderLayout.CENTER);
+        projectSelectPanel.add(newProjectBtn, BorderLayout.EAST);
+        form.add(projectSelectPanel);
 
         form.add(new JLabel("Archivo CSV:"));
         JPanel fileChoosePanel = new JPanel(new BorderLayout(5, 0));
         JButton selectFileBtn = new JButton("Examinar CSV...");
         selectFileBtn.setToolTipText("Selecciona un archivo CSV desde tu computadora para analizar sus columnas y datos");
-        selectedFileLabel = new JLabel("Ningún archivo seleccionado");
+        selectedFileLabel = new JLabel("Ningun archivo seleccionado");
         fileChoosePanel.add(selectFileBtn, BorderLayout.WEST);
         fileChoosePanel.add(selectedFileLabel, BorderLayout.CENTER);
         form.add(fileChoosePanel);
 
         form.add(new JLabel("Estructura del Archivo:"));
         hasHeaderCheckbox = new JCheckBox("El archivo CSV contiene fila de encabezados", true);
-        hasHeaderCheckbox.setToolTipText("Indica si la primera fila del archivo contiene nombres de columnas o si son directamente registros de datos");
+        hasHeaderCheckbox.setToolTipText("Indica si la primera fila contiene nombres de columnas o son registros de datos");
         form.add(hasHeaderCheckbox);
 
         form.add(new JLabel("Nombre del Dataset:"));
         datasetNameField = new JTextField("Orquitas-Sensors-v1");
-        datasetNameField.setToolTipText("Nombre identificador único del dataset dentro del servidor orquestador");
+        datasetNameField.setToolTipText("Nombre identificador unico del dataset dentro del proyecto");
         form.add(datasetNameField);
 
         form.add(new JLabel("Tipo de Problema:"));
         taskTypeCombo = new JComboBox<>(TaskType.values());
-        taskTypeCombo.setToolTipText("Tipo de problema: REGRESSION (predicción continua) o CLASSIFICATION (categorías/etiquetas)");
+        taskTypeCombo.setToolTipText("Tipo de problema: REGRESSION o CLASSIFICATION");
         form.add(taskTypeCombo);
 
         panel.add(form, BorderLayout.NORTH);
 
-        // Centro: Split pane con Tabla de Configuración de Columnas y Vista Previa de Datos
-        String[] colHeaders = {"Índice", "Nombre de Columna", "Rol", "Tipo de Normalización"};
+        // Centro: Columnas auto-detectadas y vista previa
+        String[] colHeaders = {"Indice", "Nombre de Columna", "Rol", "Tipo de Normalizacion"};
         columnsModel = new DefaultTableModel(colHeaders, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return column != 0; // El índice no se edita directamente
+                return column != 0;
             }
         };
         columnsTable = new JTable(columnsModel);
         columnsTable.setRowHeight(24);
-        columnsTable.setToolTipText("Configura el rol (INPUT, TARGET o IGNORE) y la normalización individual para cada columna");
+        columnsTable.setToolTipText("Configura el rol (INPUT, TARGET o IGNORE) y la normalizacion para cada columna");
         JScrollPane colsScroll = new JScrollPane(columnsTable);
-        colsScroll.setBorder(new TitledBorder("2. Configuración Granular de Columnas (Auto-detectadas del CSV)"));
+        colsScroll.setBorder(new TitledBorder("2. Configuracion Granular de Columnas (Auto-detectadas del CSV)"));
 
         previewModel = new DefaultTableModel();
         previewTable = new JTable(previewModel);
         previewTable.setRowHeight(20);
-        previewTable.setToolTipText("Muestra las primeras filas leídas del archivo CSV para verificar el formato de los datos");
+        previewTable.setToolTipText("Muestra las primeras filas leidas del archivo CSV");
         JScrollPane previewScroll = new JScrollPane(previewTable);
         previewScroll.setBorder(new TitledBorder("3. Vista Previa de Datos (Primeras 10 filas)"));
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, colsScroll, previewScroll);
-        splitPane.setDividerLocation(200);
+        splitPane.setDividerLocation(180);
         splitPane.setResizeWeight(0.5);
         panel.add(splitPane, BorderLayout.CENTER);
 
@@ -251,12 +289,12 @@ public class AdminPanel extends JPanel {
         JPanel extraForm = new JPanel(new GridLayout(2, 2, 5, 5));
         extraForm.add(new JLabel("Etiquetas de Clases (separadas por coma, si es multiclase):"));
         classLabelsField = new JTextField("LOBITO, MURO, OBSTACULO, SALIDA");
-        classLabelsField.setToolTipText("Nombres de las categorías ordenadas por índice (ej: LOBITO, MURO, OBSTACULO, SALIDA) para clasificación");
+        classLabelsField.setToolTipText("Nombres de las categorias ordenadas por indice para clasificacion");
         extraForm.add(classLabelsField);
 
-        extraForm.add(new JLabel("Normalización global de respaldo:"));
+        extraForm.add(new JLabel("Normalizacion global de respaldo:"));
         normCombo = new JComboBox<>(NormalizationType.values());
-        normCombo.setToolTipText("Técnica de normalización por defecto aplicada a las columnas numéricas (MIN_MAX escala al rango [0, 1])");
+        normCombo.setToolTipText("Tecnica de normalizacion por defecto aplicada a las columnas numericas");
         extraForm.add(normCombo);
         southPanel.add(extraForm, BorderLayout.NORTH);
 
@@ -264,7 +302,7 @@ public class AdminPanel extends JPanel {
         uploadButton.setBackground(new Color(40, 140, 40));
         uploadButton.setForeground(Color.WHITE);
         uploadButton.setFont(uploadButton.getFont().deriveFont(Font.BOLD, 13f));
-        uploadButton.setToolTipText("Envía y registra el dataset estructurado en el almacenamiento persistente del servidor");
+        uploadButton.setToolTipText("Envia y registra el dataset estructurado en el almacenamiento persistente del servidor");
         southPanel.add(uploadButton, BorderLayout.SOUTH);
 
         panel.add(southPanel, BorderLayout.SOUTH);
@@ -278,6 +316,31 @@ public class AdminPanel extends JPanel {
         uploadButton.addActionListener(e -> uploadDataset());
 
         return panel;
+    }
+
+    private void promptCreateProject() {
+        String name = JOptionPane.showInputDialog(this,
+                "Introduce el nombre del nuevo proyecto:",
+                "Crear Proyecto",
+                JOptionPane.PLAIN_MESSAGE);
+        if (name != null && !name.trim().isEmpty()) {
+            final String projName = name.trim();
+            connection.createProject(projName).thenAccept(json -> SwingUtilities.invokeLater(() -> {
+                refreshServerProjectsAndDatasets(() -> {
+                    for (int i = 0; i < uploadProjectCombo.getItemCount(); i++) {
+                        Project p = uploadProjectCombo.getItemAt(i);
+                        if (p != null && p.getName().equalsIgnoreCase(projName)) {
+                            uploadProjectCombo.setSelectedIndex(i);
+                            break;
+                        }
+                    }
+                    JOptionPane.showMessageDialog(this, "Proyecto '" + projName + "' creado exitosamente.");
+                });
+            })).exceptionally(ex -> {
+                SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error creando proyecto: " + ex.getMessage()));
+                return null;
+            });
+        }
     }
 
     private void selectCsvFile() {
@@ -306,7 +369,6 @@ public class AdminPanel extends JPanel {
             selectedFileLabel.setText((selectedCsvFile != null ? selectedCsvFile.getName() : "CSV") +
                     " (" + result.getRowCount() + " filas, " + result.getColumnCount() + " columnas)");
 
-            // 1. Llenar tabla de columnas auto-detectadas
             columnsModel.setRowCount(0);
             for (ColumnConfig cfg : result.getColumnConfigs()) {
                 columnsModel.addRow(new Object[]{
@@ -317,14 +379,12 @@ public class AdminPanel extends JPanel {
                 });
             }
 
-            // Asignar editores desplegables para Rol y Normalización
             TableColumn roleCol = columnsTable.getColumnModel().getColumn(2);
             roleCol.setCellEditor(new DefaultCellEditor(new JComboBox<>(ColumnRole.values())));
 
             TableColumn normCol = columnsTable.getColumnModel().getColumn(3);
             normCol.setCellEditor(new DefaultCellEditor(new JComboBox<>(NormalizationType.values())));
 
-            // 2. Llenar tabla de vista previa
             previewModel.setRowCount(0);
             previewModel.setColumnCount(0);
             for (String h : result.getHeaders()) {
@@ -341,7 +401,7 @@ public class AdminPanel extends JPanel {
 
     private void uploadDataset() {
         if (cachedCsvContent == null || columnsModel.getRowCount() == 0) {
-            JOptionPane.showMessageDialog(this, "Selecciona primero un archivo CSV válido.");
+            JOptionPane.showMessageDialog(this, "Selecciona primero un archivo CSV valido.");
             return;
         }
 
@@ -375,9 +435,15 @@ public class AdminPanel extends JPanel {
                 return;
             }
 
+            Project selectedProj = (Project) uploadProjectCombo.getSelectedItem();
+            String projId = selectedProj != null ? selectedProj.getId() : "default-project";
+            String projName = selectedProj != null ? selectedProj.getName() : "Proyecto Principal";
+
             DatasetMetadata meta = new DatasetMetadata();
             meta.setId("ds-" + System.currentTimeMillis() % 10000);
             meta.setName(datasetNameField.getText().trim());
+            meta.setProjectId(projId);
+            meta.setProjectName(projName);
             meta.setFilename(selectedCsvFile != null ? selectedCsvFile.getName() : "dataset.csv");
             meta.setTaskType((TaskType) taskTypeCombo.getSelectedItem());
             meta.setHasHeader(hasHeaderCheckbox.isSelected());
@@ -398,9 +464,9 @@ public class AdminPanel extends JPanel {
             final int reportedOutputs = outputCount;
 
             connection.uploadDataset(meta).thenAccept(resp -> SwingUtilities.invokeLater(() -> {
-                JOptionPane.showMessageDialog(this, "¡Dataset subido con éxito al servidor con " +
-                        reportedInputs + " entradas y " + reportedOutputs + " salidas!");
-                refreshServerDatasets();
+                JOptionPane.showMessageDialog(this, "Dataset subido con exito al servidor en el proyecto '" +
+                        projName + "' con " + reportedInputs + " entradas y " + reportedOutputs + " salidas.");
+                refreshServerProjectsAndDatasets(null);
             })).exceptionally(ex -> {
                 SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()));
                 return null;
@@ -411,69 +477,75 @@ public class AdminPanel extends JPanel {
         }
     }
 
-    // --- Subpestaña Campaña ---
+    // --- Subpestaña 2: Control de Campañas ---
     private JPanel buildCampaignTab() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        JPanel configPanel = new JPanel(new GridLayout(10, 2, 8, 8));
-        configPanel.setBorder(new TitledBorder("Parámetros de Búsqueda Heurística y Entrenamiento"));
+        JPanel configPanel = new JPanel(new GridLayout(11, 2, 8, 8));
+        configPanel.setBorder(new TitledBorder("1. Nueva Campana de Entrenamiento"));
 
-        configPanel.add(new JLabel("Dataset Activo:"));
-        datasetCombo = new JComboBox<>();
-        datasetCombo.setToolTipText("Selecciona el dataset guardado en el servidor para entrenar las redes neuronales");
-        configPanel.add(datasetCombo);
+        configPanel.add(new JLabel("Proyecto:"));
+        campaignProjectCombo = new JComboBox<>();
+        campaignProjectCombo.setToolTipText("Filtra los datasets disponibles por proyecto seleccionado");
+        campaignProjectCombo.addActionListener(e -> updateCampaignDatasetsDropdown());
+        configPanel.add(campaignProjectCombo);
 
-        configPanel.add(new JLabel("Estrategia Heurística:"));
+        configPanel.add(new JLabel("Dataset:"));
+        campaignDatasetCombo = new JComboBox<>();
+        campaignDatasetCombo.setToolTipText("Selecciona el dataset sobre el que se ejecutara esta campana de entrenamiento");
+        configPanel.add(campaignDatasetCombo);
+
+        configPanel.add(new JLabel("Estrategia Heuristica:"));
         heuristicCombo = new JComboBox<>(HeuristicType.values());
-        heuristicCombo.setToolTipText("Estrategia de búsqueda heurística: GUIDED_SEARCH (búsqueda informada), EVOLUTIONARY (genético), RANDOM_SEARCH");
+        heuristicCombo.setToolTipText("Estrategia de busqueda heuristica: GUIDED_SEARCH, EVOLUTIONARY, RANDOM_SEARCH");
         configPanel.add(heuristicCombo);
 
-        configPanel.add(new JLabel("Capas Ocultas (Mín / Máx):"));
+        configPanel.add(new JLabel("Capas Ocultas (Min / Max):"));
         JPanel layersBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         minLayersSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 3, 1));
-        minLayersSpinner.setToolTipText("Número mínimo de capas ocultas a explorar en las arquitecturas neuronales");
+        minLayersSpinner.setToolTipText("Numero minimo de capas ocultas a explorar");
         maxLayersSpinner = new JSpinner(new SpinnerNumberModel(2, 1, 4, 1));
-        maxLayersSpinner.setToolTipText("Número máximo de capas ocultas a explorar en las arquitecturas neuronales");
+        maxLayersSpinner.setToolTipText("Numero maximo de capas ocultas a explorar");
         layersBox.add(minLayersSpinner);
         layersBox.add(new JLabel("a"));
         layersBox.add(maxLayersSpinner);
         configPanel.add(layersBox);
 
-        configPanel.add(new JLabel("Neuronas por Capa (Mín / Máx):"));
+        configPanel.add(new JLabel("Neuronas por Capa (Min / Max):"));
         JPanel neuronsBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         minNeuronsSpinner = new JSpinner(new SpinnerNumberModel(4, 2, 128, 1));
-        minNeuronsSpinner.setToolTipText("Número mínimo de neuronas por capa oculta");
+        minNeuronsSpinner.setToolTipText("Numero minimo de neuronas por capa oculta");
         maxNeuronsSpinner = new JSpinner(new SpinnerNumberModel(24, 2, 256, 1));
-        maxNeuronsSpinner.setToolTipText("Número máximo de neuronas por capa oculta");
+        maxNeuronsSpinner.setToolTipText("Numero maximo de neuronas por capa oculta");
         neuronsBox.add(minNeuronsSpinner);
         neuronsBox.add(new JLabel("a"));
         neuronsBox.add(maxNeuronsSpinner);
         configPanel.add(neuronsBox);
 
-        configPanel.add(new JLabel("Máximo de Épocas (Iteraciones):"));
+        configPanel.add(new JLabel("Maximo de Epocas (Iteraciones):"));
         maxIterSpinner = new JSpinner(new SpinnerNumberModel(1000, 100, 50000, 100));
-        maxIterSpinner.setToolTipText("Máximo de épocas de entrenamiento permitidas por cada tarea de red neuronal");
+        maxIterSpinner.setToolTipText("Maximo de epocas permitidas por cada red neuronal evaluada");
         configPanel.add(maxIterSpinner);
 
-        configPanel.add(new JLabel("Early Stopping (Paciencia en Épocas):"));
+        configPanel.add(new JLabel("Early Stopping (Paciencia en Epocas):"));
         patienceSpinner = new JSpinner(new SpinnerNumberModel(80, 10, 2000, 10));
-        patienceSpinner.setToolTipText("Early Stopping: épocas consecutivas toleradas sin mejora del error antes de detener la tarea");
+        patienceSpinner.setToolTipText("Early Stopping: epocas consecutivas sin mejora del error antes de detener la tarea");
         configPanel.add(patienceSpinner);
 
         configPanel.add(new JLabel("Error Objetivo (Target Error):"));
         targetErrorSpinner = new JSpinner(new SpinnerNumberModel(0.01, 0.0001, 0.5, 0.005));
-        targetErrorSpinner.setToolTipText("Error cuadrático medio objetivo. Si la red lo alcanza, finaliza tempranamente con éxito");
+        targetErrorSpinner.setToolTipText("Error cuadratico medio objetivo. Si la red lo alcanza, finaliza con exito");
         configPanel.add(targetErrorSpinner);
 
         configPanel.add(new JLabel("Data Augmentation (Ruido en Sensores):"));
         JPanel augBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
         enableAugmentationCheckbox = new JCheckBox("Activar", false);
-        enableAugmentationCheckbox.setToolTipText("Data Augmentation: sintetiza muestras agregando perturbación gaussiana a las entradas");
+        enableAugmentationCheckbox.setToolTipText("Data Augmentation: sintetiza muestras agregando perturbacion gaussiana");
         augmentationFactorSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 5, 1));
-        augmentationFactorSpinner.setToolTipText("Cantidad de réplicas sintéticas adicionales generadas por cada fila de entrenamiento");
+        augmentationFactorSpinner.setToolTipText("Cantidad de replicas sinteticas generadas por fila");
         augmentationNoiseSpinner = new JSpinner(new SpinnerNumberModel(0.03, 0.005, 0.20, 0.005));
-        augmentationNoiseSpinner.setToolTipText("Desviación estándar del ruido gaussiano añadido a los valores de los sensores");
+        augmentationNoiseSpinner.setToolTipText("Desviacion estandar del ruido gaussiano anadido");
         augBox.add(enableAugmentationCheckbox);
         augBox.add(new JLabel("Copias:"));
         augBox.add(augmentationFactorSpinner);
@@ -483,59 +555,106 @@ public class AdminPanel extends JPanel {
 
         configPanel.add(new JLabel("Total de Tareas a Explorar:"));
         maxTasksSpinner = new JSpinner(new SpinnerNumberModel(30, 5, 500, 5));
-        maxTasksSpinner.setToolTipText("Cantidad total de configuraciones de redes neuronales a evaluar en esta campaña");
+        maxTasksSpinner.setToolTipText("Cantidad total de configuraciones de redes neuronales a evaluar");
         configPanel.add(maxTasksSpinner);
 
-        // Botones de Acción
-        JPanel actionPanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 0));
-        startCampaignBtn = new JButton("Iniciar Campaña");
+        startCampaignBtn = new JButton("Iniciar Campana");
         startCampaignBtn.setBackground(new Color(40, 140, 40));
         startCampaignBtn.setForeground(Color.WHITE);
-        startCampaignBtn.setToolTipText("Inicia la campaña heurística en el servidor para despachar tareas a todos los workers conectados");
+        startCampaignBtn.setToolTipText("Lanza esta campana de entrenamiento independiente en el cluster");
+        startCampaignBtn.addActionListener(e -> startCampaign());
 
-        pauseCampaignBtn = new JButton("Pausar");
-        pauseCampaignBtn.setToolTipText("Pausa temporalmente la asignación de nuevas tareas de entrenamiento");
-
-        stopCampaignBtn = new JButton("Detener");
-        stopCampaignBtn.setToolTipText("Detiene la campaña actual y cancela las tareas pendientes en la cola");
-
-        actionPanel.add(startCampaignBtn);
-        actionPanel.add(pauseCampaignBtn);
-        actionPanel.add(stopCampaignBtn);
-        configPanel.add(new JLabel("Acciones:"));
-        configPanel.add(actionPanel);
+        configPanel.add(new JLabel("Accion:"));
+        configPanel.add(startCampaignBtn);
 
         panel.add(configPanel, BorderLayout.NORTH);
 
-        // Estado en tiempo real del Cluster
+        // Centro: Tabla de Campañas Activas concurrentes y Monitoreo del Cluster
+        JPanel centerPanel = new JPanel(new BorderLayout(5, 5));
+        centerPanel.setBorder(new TitledBorder("2. Campanas Activas en el Cluster (Fair-Share Round-Robin)"));
+
+        String[] campHeaders = {"ID Campana", "Nombre", "Proyecto", "Dataset", "Estrategia", "Estado", "Paciencia", "Error Obj."};
+        activeCampaignsModel = new DefaultTableModel(campHeaders, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        activeCampaignsTable = new JTable(activeCampaignsModel);
+        activeCampaignsTable.setRowHeight(22);
+        activeCampaignsTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        activeCampaignsTable.setToolTipText("Selecciona una campana activa para pausarla, reanudarla o detenerla individualmente");
+        centerPanel.add(new JScrollPane(activeCampaignsTable), BorderLayout.CENTER);
+
+        JPanel campActions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 5));
+        pauseCampaignBtn = new JButton("Pausar Seleccionada");
+        pauseCampaignBtn.setToolTipText("Pausa temporalmente la asignacion de nuevas tareas para la campana seleccionada");
+        resumeCampaignBtn = new JButton("Reanudar Seleccionada");
+        resumeCampaignBtn.setToolTipText("Reanuda el despacho de tareas para la campana seleccionada");
+        stopCampaignBtn = new JButton("Detener Seleccionada");
+        stopCampaignBtn.setToolTipText("Detiene definitivamente la campana seleccionada y cancela sus tareas en cola");
+        JButton refreshStatusBtn = new JButton("Actualizar");
+        refreshStatusBtn.setToolTipText("Consulta el estado mas reciente de las campanas y workers en el servidor");
+
+        campActions.add(pauseCampaignBtn);
+        campActions.add(resumeCampaignBtn);
+        campActions.add(stopCampaignBtn);
+        campActions.add(refreshStatusBtn);
+        centerPanel.add(campActions, BorderLayout.SOUTH);
+
+        pauseCampaignBtn.addActionListener(e -> pauseSelectedCampaign());
+        resumeCampaignBtn.addActionListener(e -> resumeSelectedCampaign());
+        stopCampaignBtn.addActionListener(e -> stopSelectedCampaign());
+        refreshStatusBtn.addActionListener(e -> refreshStatus());
+
+        panel.add(centerPanel, BorderLayout.CENTER);
+
+        // Pie: Estado del Cluster
         JPanel statusBox = new JPanel(new GridLayout(2, 1, 5, 5));
-        statusBox.setBorder(new TitledBorder("Estado del Cluster y Servidor"));
-        campaignStatusLabel = new JLabel("Campaña: Ninguna activa", SwingConstants.CENTER);
+        statusBox.setBorder(new TitledBorder("Estado del Cluster de Workers"));
+        campaignStatusLabel = new JLabel("Tareas: 0 pendientes | 0 en progreso | 0 completadas", SwingConstants.CENTER);
         workersStatusLabel = new JLabel("Workers: 0 conectados | 0 slots libres", SwingConstants.CENTER);
-        campaignStatusLabel.setFont(campaignStatusLabel.getFont().deriveFont(Font.BOLD, 13f));
+        campaignStatusLabel.setFont(campaignStatusLabel.getFont().deriveFont(Font.BOLD, 12f));
         workersStatusLabel.setFont(workersStatusLabel.getFont().deriveFont(Font.PLAIN, 12f));
 
         statusBox.add(campaignStatusLabel);
         statusBox.add(workersStatusLabel);
-        panel.add(statusBox, BorderLayout.CENTER);
-
-        startCampaignBtn.addActionListener(e -> startCampaign());
-        pauseCampaignBtn.addActionListener(e -> connection.pauseCampaign());
-        stopCampaignBtn.addActionListener(e -> connection.stopCampaign());
+        panel.add(statusBox, BorderLayout.SOUTH);
 
         return panel;
     }
 
+    private void updateCampaignDatasetsDropdown() {
+        Project selectedProj = (Project) campaignProjectCombo.getSelectedItem();
+        campaignDatasetCombo.removeAllItems();
+        if (selectedProj == null) {
+            for (DatasetMetadata d : cachedDatasets) {
+                campaignDatasetCombo.addItem(d);
+            }
+        } else {
+            for (DatasetMetadata d : cachedDatasets) {
+                if (selectedProj.getId().equals(d.getProjectId())) {
+                    campaignDatasetCombo.addItem(d);
+                }
+            }
+        }
+    }
+
     private void startCampaign() {
-        String dsId = (String) datasetCombo.getSelectedItem();
-        if (dsId == null || dsId.isEmpty()) {
+        DatasetMetadata selectedDs = (DatasetMetadata) campaignDatasetCombo.getSelectedItem();
+        if (selectedDs == null) {
             JOptionPane.showMessageDialog(this, "Primero sube o selecciona un dataset.");
             return;
         }
 
+        Project selectedProj = (Project) campaignProjectCombo.getSelectedItem();
+        String projId = selectedProj != null ? selectedProj.getId() : selectedDs.getProjectId();
+
         CampaignConfig cfg = new CampaignConfig();
-        cfg.setName("Campaña-" + System.currentTimeMillis() % 1000);
-        cfg.setDatasetId(dsId);
+        cfg.setName("Campana-" + selectedDs.getName() + "-" + System.currentTimeMillis() % 1000);
+        cfg.setProjectId(projId);
+        cfg.setDatasetId(selectedDs.getId());
+        cfg.setDatasetName(selectedDs.getName());
         cfg.setHeuristicType((HeuristicType) heuristicCombo.getSelectedItem());
         cfg.setMinHiddenLayers((Integer) minLayersSpinner.getValue());
         cfg.setMaxHiddenLayers((Integer) maxLayersSpinner.getValue());
@@ -550,53 +669,68 @@ public class AdminPanel extends JPanel {
         cfg.setMaxTotalTasks((Integer) maxTasksSpinner.getValue());
 
         connection.startCampaign(cfg).thenAccept(r -> SwingUtilities.invokeLater(() -> {
-            JOptionPane.showMessageDialog(this, "¡Campaña iniciada! Las tareas se están despachando a los workers.");
+            JOptionPane.showMessageDialog(this, "Campana iniciada para el dataset '" + selectedDs.getName() +
+                    "'. Despachando tareas concurrentes a los workers.");
             refreshStatus();
         })).exceptionally(ex -> {
-            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error: " + ex.getMessage()));
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error iniciando campana: " + ex.getMessage()));
             return null;
         });
     }
 
-    private void refreshServerDatasets() {
-        connection.getStatus().thenAccept(json -> SwingUtilities.invokeLater(() -> {
-            Map<String, Object> map = JsonUtil.fromJson(json, Map.class);
-            if (map != null && map.containsKey("datasets")) {
-                List<Map<String, Object>> list = (List<Map<String, Object>>) map.get("datasets");
-                datasetCombo.removeAllItems();
-                for (Map<String, Object> d : list) {
-                    datasetCombo.addItem((String) d.get("id"));
-                }
-            }
-        }));
+    private String getSelectedCampaignId() {
+        int row = activeCampaignsTable.getSelectedRow();
+        if (row >= 0 && row < cachedActiveCampaigns.size()) {
+            return cachedActiveCampaigns.get(row).getCampaignId();
+        }
+        return null;
     }
 
-    private void refreshStatus() {
-        connection.getStatus().thenAccept(json -> SwingUtilities.invokeLater(() -> {
-            Map<String, Object> map = JsonUtil.fromJson(json, Map.class);
-            if (map != null) {
-                int workers = ((Number) map.getOrDefault("activeWorkers", 0)).intValue();
-                int totalSlots = ((Number) map.getOrDefault("totalSlots", 0)).intValue();
-                int busySlots = ((Number) map.getOrDefault("busySlots", 0)).intValue();
-                int pending = ((Number) map.getOrDefault("pendingTasks", 0)).intValue();
-                int running = ((Number) map.getOrDefault("runningTasks", 0)).intValue();
-                int completed = ((Number) map.getOrDefault("completedTasks", 0)).intValue();
-
-                workersStatusLabel.setText(String.format("Workers: %d conectados | Slots: %d en uso / %d totales",
-                        workers, busySlots, totalSlots));
-                campaignStatusLabel.setText(String.format("Tareas: %d pendientes | %d en progreso | %d completadas",
-                        pending, running, completed));
-            }
-        }));
+    private void pauseSelectedCampaign() {
+        String campId = getSelectedCampaignId();
+        connection.pauseCampaign(campId).thenAccept(r -> SwingUtilities.invokeLater(this::refreshStatus));
     }
 
-    // --- Subpestaña Leaderboard ---
+    private void resumeSelectedCampaign() {
+        String campId = getSelectedCampaignId();
+        connection.resumeCampaign(campId).thenAccept(r -> SwingUtilities.invokeLater(this::refreshStatus));
+    }
+
+    private void stopSelectedCampaign() {
+        String campId = getSelectedCampaignId();
+        connection.stopCampaign(campId).thenAccept(r -> SwingUtilities.invokeLater(this::refreshStatus));
+    }
+
+    // --- Subpestaña 3: Leaderboard & Modelos .nnet ---
     private JPanel buildLeaderboardTab() {
         JPanel panel = new JPanel(new BorderLayout(10, 10));
         panel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
+        // Panel Superior: Filtros de Proyecto y Dataset
+        JPanel filterPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
+        filterPanel.setBorder(new TitledBorder("Filtros de Clasificacion"));
+
+        filterPanel.add(new JLabel("Proyecto:"));
+        lbProjectCombo = new JComboBox<>();
+        lbProjectCombo.setToolTipText("Filtra los resultados del leaderboard por proyecto");
+        lbProjectCombo.addActionListener(e -> updateLbDatasetsDropdown());
+        filterPanel.add(lbProjectCombo);
+
+        filterPanel.add(new JLabel("Dataset:"));
+        lbDatasetCombo = new JComboBox<>();
+        lbDatasetCombo.setToolTipText("Filtra los resultados del leaderboard por un dataset especifico");
+        filterPanel.add(lbDatasetCombo);
+
+        refreshLbButton = new JButton("Filtrar / Actualizar");
+        refreshLbButton.setToolTipText("Aplica los filtros y recarga la clasificacion de modelos desde el servidor");
+        refreshLbButton.addActionListener(e -> refreshLeaderboard());
+        filterPanel.add(refreshLbButton);
+
+        panel.add(filterPanel, BorderLayout.NORTH);
+
+        // Centro: Tabla del Leaderboard
         String[] cols = {
-                "ID", "Topología", "Transfer", "Accuracy (%)", "RMSE", "MSE",
+                "ID", "Dataset", "Topologia", "Transfer", "Accuracy (%)", "RMSE", "MSE",
                 "MAE", "R2", "MAPE (%)", "MaxError", "P90", "Tiempo (s)", "Iter", "ErrorFinal", "Worker"
         };
 
@@ -612,21 +746,22 @@ public class AdminPanel extends JPanel {
         leaderboardTable.setToolTipText("Selecciona una fila para probar inferencia en vivo o descargar el archivo .nnet");
 
         String[] columnToolTips = {
-                "Identificador único de la tarea",
-                "Topología de capas neuronales (Entradas-Ocultas-Salidas)",
-                "Función de activación/transferencia en capas ocultas",
-                "Porcentaje de acierto en clasificación sobre el conjunto de test",
-                "Raíz del Error Cuadrático Medio en conjunto de prueba",
-                "Error Cuadrático Medio en conjunto de prueba",
+                "Identificador unico de la tarea",
+                "Dataset sobre el cual fue entrenada la red",
+                "Topologia de capas neuronales (Entradas-Ocultas-Salidas)",
+                "Funcion de activacion/transferencia en capas ocultas",
+                "Porcentaje de acierto en clasificacion sobre el conjunto de test",
+                "Raiz del Error Cuadratico Medio en conjunto de prueba",
+                "Error Cuadratico Medio en conjunto de prueba",
                 "Error Absoluto Medio promedio en conjunto de prueba",
-                "Coeficiente de determinación R² (calidad de ajuste del modelo)",
+                "Coeficiente de determinacion R2 (calidad de ajuste del modelo)",
                 "Error Porcentual Absoluto Medio (%)",
-                "Error máximo absoluto registrado en una sola muestra",
+                "Error maximo absoluto registrado en una sola muestra",
                 "Percentil 90 del error absoluto",
                 "Tiempo total de entrenamiento en segundos",
-                "Épocas ejecutadas hasta convergencia o early stopping",
+                "Epocas ejecutadas hasta convergencia o early stopping",
                 "Error de entrenamiento alcanzado al finalizar",
-                "Nombre del nodo (Worker) que entrenó este modelo"
+                "Nombre del nodo (Worker) que entreno este modelo"
         };
         javax.swing.table.JTableHeader header = new javax.swing.table.JTableHeader(leaderboardTable.getColumnModel()) {
             @Override
@@ -641,52 +776,295 @@ public class AdminPanel extends JPanel {
         };
         leaderboardTable.setTableHeader(header);
 
-        JScrollPane scroll = new JScrollPane(leaderboardTable);
-        panel.add(scroll, BorderLayout.CENTER);
+        panel.add(new JScrollPane(leaderboardTable), BorderLayout.CENTER);
 
+        // Pie: Acciones
         JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 5));
-        refreshLbButton = new JButton("Actualizar Tabla");
-        refreshLbButton.setToolTipText("Consulta al servidor el estado más reciente del ranking de modelos evaluados");
 
         JButton testInferenceBtn = new JButton("Probar Inferencia en Vivo");
-        testInferenceBtn.setToolTipText("Abre una ventana para ingresar entradas manuales y probar la predicción de la red en tiempo real");
+        testInferenceBtn.setToolTipText("Abre una ventana para ingresar entradas manuales y probar la prediccion en tiempo real");
+        testInferenceBtn.addActionListener(e -> {
+            int row = leaderboardTable.getSelectedRow();
+            if (row < 0 || row >= currentLeaderboard.size()) {
+                JOptionPane.showMessageDialog(this, "Selecciona un modelo del leaderboard primero.");
+                return;
+            }
+            int modelRow = leaderboardTable.convertRowIndexToModel(row);
+            openInferenceDialog(currentLeaderboard.get(modelRow));
+        });
 
         downloadNnetButton = new JButton("Descargar .nnet");
         downloadNnetButton.setBackground(new Color(60, 110, 180));
         downloadNnetButton.setForeground(Color.WHITE);
         downloadNnetButton.setToolTipText("Descarga el archivo binario compilado .nnet de la red neuronal seleccionada");
+        downloadNnetButton.addActionListener(e -> {
+            int row = leaderboardTable.getSelectedRow();
+            if (row < 0 || row >= currentLeaderboard.size()) {
+                JOptionPane.showMessageDialog(this, "Selecciona una fila del leaderboard primero.");
+                return;
+            }
+            int modelRow = leaderboardTable.convertRowIndexToModel(row);
+            downloadModel(currentLeaderboard.get(modelRow));
+        });
 
-        bottom.add(refreshLbButton);
         bottom.add(testInferenceBtn);
         bottom.add(downloadNnetButton);
         panel.add(bottom, BorderLayout.SOUTH);
 
-        refreshLbButton.addActionListener(e -> refreshLeaderboard());
-        testInferenceBtn.addActionListener(e -> openInferenceTestDialog());
-        downloadNnetButton.addActionListener(e -> downloadSelectedModel());
+        return panel;
+    }
+
+    private void updateLbDatasetsDropdown() {
+        Project selectedProj = (Project) lbProjectCombo.getSelectedItem();
+        lbDatasetCombo.removeAllItems();
+        lbDatasetCombo.addItem(null); // Opcion todos los datasets
+
+        if (selectedProj == null) {
+            for (DatasetMetadata d : cachedDatasets) {
+                lbDatasetCombo.addItem(d);
+            }
+        } else {
+            for (DatasetMetadata d : cachedDatasets) {
+                if (selectedProj.getId().equals(d.getProjectId())) {
+                    lbDatasetCombo.addItem(d);
+                }
+            }
+        }
+    }
+
+    private void refreshLeaderboard() {
+        Project selectedProj = (Project) lbProjectCombo.getSelectedItem();
+        DatasetMetadata selectedDs = (DatasetMetadata) lbDatasetCombo.getSelectedItem();
+
+        java.util.concurrent.CompletableFuture<String> future;
+        if (selectedDs != null) {
+            future = connection.getDatasetLeaderboard(selectedDs.getId());
+        } else if (selectedProj != null) {
+            future = connection.getProjectLeaderboard(selectedProj.getId());
+        } else {
+            future = connection.getLeaderboard(null);
+        }
+
+        future.thenAccept(json -> SwingUtilities.invokeLater(() -> {
+            TaskResult[] results = JsonUtil.fromJson(json, TaskResult[].class);
+            leaderboardModel.setRowCount(0);
+            currentLeaderboard.clear();
+
+            if (results != null) {
+                for (TaskResult r : results) {
+                    currentLeaderboard.add(r);
+                    EvaluationMetrics m = r.getMetrics();
+                    leaderboardModel.addRow(new Object[]{
+                            r.getTaskId(),
+                            r.getDatasetName() != null ? r.getDatasetName() : (r.getDatasetId() != null ? r.getDatasetId() : "-"),
+                            r.getNetworkConfig() != null ? r.getNetworkConfig().getTopologySummary() : "-",
+                            r.getNetworkConfig() != null ? r.getNetworkConfig().getTransferFunction() : "-",
+                            m != null ? String.format("%.2f", m.getAccuracy()) : "-",
+                            m != null ? String.format("%.4f", m.getRmse()) : "-",
+                            m != null ? String.format("%.4f", m.getMse()) : "-",
+                            m != null ? String.format("%.4f", m.getMae()) : "-",
+                            m != null ? String.format("%.4f", m.getR2()) : "-",
+                            m != null ? String.format("%.2f", m.getMape()) : "-",
+                            m != null ? String.format("%.4f", m.getMaxError()) : "-",
+                            m != null ? String.format("%.4f", m.getPercentil90()) : "-",
+                            m != null ? String.format("%.2f", m.getTiempoSeg()) : "-",
+                            m != null ? m.getIteraciones() : "-",
+                            m != null ? String.format("%.5f", m.getErrorFinal()) : "-",
+                            r.getWorkerName()
+                    });
+                }
+            }
+            refreshStatus();
+        })).exceptionally(ex -> {
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error actualizando leaderboard: " + ex.getMessage()));
+            return null;
+        });
+    }
+
+    // --- Subpestaña 4: Comparativa de Datasets ---
+    private JPanel buildComparisonTab() {
+        JPanel panel = new JPanel(new BorderLayout(10, 10));
+        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
+
+        // Cabecera: Selector de Proyecto y Boton Actualizar
+        JPanel headerPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
+        headerPanel.setBorder(new TitledBorder("Proyecto para Comparar"));
+
+        headerPanel.add(new JLabel("Seleccionar Proyecto:"));
+        compProjectCombo = new JComboBox<>();
+        compProjectCombo.setToolTipText("Selecciona el proyecto cuyos datasets deseas contrastar");
+        headerPanel.add(compProjectCombo);
+
+        JButton refreshCompBtn = new JButton("Actualizar Comparativa");
+        refreshCompBtn.setToolTipText("Consulta y calcula la comparativa entre todos los datasets del proyecto seleccionado");
+        refreshCompBtn.addActionListener(e -> refreshComparison());
+        headerPanel.add(refreshCompBtn);
+
+        panel.add(headerPanel, BorderLayout.NORTH);
+
+        // Centro: Tablas divididas (Mejores Modelos por Dataset + Ranking Unificado)
+        String[] compCols = {
+                "Dataset", "ID Tarea", "Topologia", "Transfer", "Accuracy (%)", "RMSE", "MSE",
+                "MAE", "R2", "Tiempo (s)", "Iter", "Worker"
+        };
+
+        bestPerDatasetModel = new DefaultTableModel(compCols, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        bestPerDatasetTable = new JTable(bestPerDatasetModel);
+        bestPerDatasetTable.setAutoCreateRowSorter(true);
+        bestPerDatasetTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        bestPerDatasetTable.setToolTipText("Muestra el modelo mas optimo (Top 1) entrenado para cada dataset de este proyecto");
+        JScrollPane topScroll = new JScrollPane(bestPerDatasetTable);
+        topScroll.setBorder(new TitledBorder("1. Mejor Modelo por Cada Dataset del Proyecto (Top 1)"));
+
+        unifiedProjectModel = new DefaultTableModel(compCols, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+        };
+        unifiedProjectTable = new JTable(unifiedProjectModel);
+        unifiedProjectTable.setAutoCreateRowSorter(true);
+        unifiedProjectTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        unifiedProjectTable.setToolTipText("Ranking completo de todas las redes neuronales entrenadas en los datasets de este proyecto");
+        JScrollPane bottomScroll = new JScrollPane(unifiedProjectTable);
+        bottomScroll.setBorder(new TitledBorder("2. Ranking Unificado de Modelos del Proyecto"));
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, topScroll, bottomScroll);
+        splitPane.setDividerLocation(180);
+        splitPane.setResizeWeight(0.4);
+        panel.add(splitPane, BorderLayout.CENTER);
+
+        // Pie: Acciones de Inferencia y Descarga para la Comparativa
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 5));
+        JButton testInferenceCompBtn = new JButton("Probar Inferencia en Vivo");
+        testInferenceCompBtn.setToolTipText("Prueba inferencia interactiva con el modelo seleccionado en cualquiera de las tablas");
+        testInferenceCompBtn.addActionListener(e -> {
+            TaskResult sel = getSelectedComparisonResult();
+            if (sel == null) {
+                JOptionPane.showMessageDialog(this, "Selecciona una fila en alguna de las dos tablas primero.");
+                return;
+            }
+            openInferenceDialog(sel);
+        });
+
+        JButton downloadCompBtn = new JButton("Descargar .nnet");
+        downloadCompBtn.setBackground(new Color(60, 110, 180));
+        downloadCompBtn.setForeground(Color.WHITE);
+        downloadCompBtn.setToolTipText("Descarga el archivo .nnet del modelo seleccionado en cualquiera de las dos tablas");
+        downloadCompBtn.addActionListener(e -> {
+            TaskResult sel = getSelectedComparisonResult();
+            if (sel == null) {
+                JOptionPane.showMessageDialog(this, "Selecciona una fila en alguna de las dos tablas primero.");
+                return;
+            }
+            downloadModel(sel);
+        });
+
+        actions.add(testInferenceCompBtn);
+        actions.add(downloadCompBtn);
+        panel.add(actions, BorderLayout.SOUTH);
 
         return panel;
     }
 
-    private void openInferenceTestDialog() {
-        int row = leaderboardTable.getSelectedRow();
-        if (row < 0 || row >= currentLeaderboard.size()) {
-            JOptionPane.showMessageDialog(this, "Selecciona un modelo del leaderboard primero.");
-            return;
+    private TaskResult getSelectedComparisonResult() {
+        int topRow = bestPerDatasetTable.getSelectedRow();
+        if (topRow >= 0 && topRow < currentBestPerDataset.size()) {
+            int mRow = bestPerDatasetTable.convertRowIndexToModel(topRow);
+            return currentBestPerDataset.get(mRow);
         }
+        int btmRow = unifiedProjectTable.getSelectedRow();
+        if (btmRow >= 0 && btmRow < currentUnifiedProject.size()) {
+            int mRow = unifiedProjectTable.convertRowIndexToModel(btmRow);
+            return currentUnifiedProject.get(mRow);
+        }
+        return null;
+    }
 
-        int modelRow = leaderboardTable.convertRowIndexToModel(row);
-        TaskResult selected = currentLeaderboard.get(modelRow);
+    private void refreshComparison() {
+        Project selectedProj = (Project) compProjectCombo.getSelectedItem();
+        String projId = selectedProj != null ? selectedProj.getId() : "default-project";
 
+        connection.getProjectLeaderboard(projId).thenAccept(json -> SwingUtilities.invokeLater(() -> {
+            TaskResult[] results = JsonUtil.fromJson(json, TaskResult[].class);
+            bestPerDatasetModel.setRowCount(0);
+            currentBestPerDataset.clear();
+            unifiedProjectModel.setRowCount(0);
+            currentUnifiedProject.clear();
+
+            if (results != null) {
+                Map<String, TaskResult> bestMap = new HashMap<>();
+
+                for (TaskResult r : results) {
+                    currentUnifiedProject.add(r);
+                    addResultToTableModel(unifiedProjectModel, r);
+
+                    String dsKey = r.getDatasetName() != null ? r.getDatasetName() :
+                            (r.getDatasetId() != null ? r.getDatasetId() : "Desconocido");
+
+                    if (!bestMap.containsKey(dsKey)) {
+                        bestMap.put(dsKey, r);
+                    } else {
+                        TaskResult existing = bestMap.get(dsKey);
+                        double accNew = r.getMetrics() != null ? r.getMetrics().getAccuracy() : 0;
+                        double accOld = existing.getMetrics() != null ? existing.getMetrics().getAccuracy() : 0;
+                        if (accNew > accOld) {
+                            bestMap.put(dsKey, r);
+                        } else if (accNew == accOld) {
+                            double rmseNew = r.getMetrics() != null ? r.getMetrics().getRmse() : 999;
+                            double rmseOld = existing.getMetrics() != null ? existing.getMetrics().getRmse() : 999;
+                            if (rmseNew < rmseOld) {
+                                bestMap.put(dsKey, r);
+                            }
+                        }
+                    }
+                }
+
+                for (TaskResult best : bestMap.values()) {
+                    currentBestPerDataset.add(best);
+                    addResultToTableModel(bestPerDatasetModel, best);
+                }
+            }
+        })).exceptionally(ex -> {
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Error actualizando comparativa: " + ex.getMessage()));
+            return null;
+        });
+    }
+
+    private void addResultToTableModel(DefaultTableModel model, TaskResult r) {
+        EvaluationMetrics m = r.getMetrics();
+        model.addRow(new Object[]{
+                r.getDatasetName() != null ? r.getDatasetName() : (r.getDatasetId() != null ? r.getDatasetId() : "-"),
+                r.getTaskId(),
+                r.getNetworkConfig() != null ? r.getNetworkConfig().getTopologySummary() : "-",
+                r.getNetworkConfig() != null ? r.getNetworkConfig().getTransferFunction() : "-",
+                m != null ? String.format("%.2f", m.getAccuracy()) : "-",
+                m != null ? String.format("%.4f", m.getRmse()) : "-",
+                m != null ? String.format("%.4f", m.getMse()) : "-",
+                m != null ? String.format("%.4f", m.getMae()) : "-",
+                m != null ? String.format("%.4f", m.getR2()) : "-",
+                m != null ? String.format("%.2f", m.getTiempoSeg()) : "-",
+                m != null ? m.getIteraciones() : "-",
+                r.getWorkerName()
+        });
+    }
+
+    // --- Inferencia Interactiva & Descarga de Modelos ---
+    private void openInferenceDialog(TaskResult selected) {
         connection.downloadModel(selected.getCampaignId(), selected.getTaskId()).thenAccept(b64 -> SwingUtilities.invokeLater(() -> {
             try {
                 org.neuroph.core.NeuralNetwork<?> net = com.neuroph.train.common.util.NetworkSerializer.fromBase64(b64);
                 int inputCount = net.getInputsCount();
-                int outputCount = net.getOutputsCount();
 
-                JDialog dialog = new JDialog((Frame) SwingUtilities.getWindowAncestor(this), "Prueba de Inferencia - " + selected.getTaskId(), true);
+                JDialog dialog = new JDialog((Frame) SwingUtilities.getWindowAncestor(this),
+                        "Prueba de Inferencia - " + selected.getTaskId(), true);
                 dialog.setLayout(new BorderLayout(10, 10));
-                dialog.setSize(450, 380);
+                dialog.setSize(450, 400);
                 dialog.setLocationRelativeTo(this);
 
                 JPanel inputsPanel = new JPanel(new GridLayout(inputCount, 2, 5, 5));
@@ -695,18 +1073,20 @@ public class AdminPanel extends JPanel {
                 for (int i = 0; i < inputCount; i++) {
                     inputsPanel.add(new JLabel("Entrada " + i + ":"));
                     inFields[i] = new JTextField("0.5");
+                    inFields[i].setToolTipText("Valor numerico para la entrada de red " + i);
                     inputsPanel.add(inFields[i]);
                 }
 
                 JPanel resultPanel = new JPanel(new BorderLayout());
-                resultPanel.setBorder(new TitledBorder("Predicción de la Red"));
+                resultPanel.setBorder(new TitledBorder("Prediccion de la Red Neuronal"));
                 JTextArea resArea = new JTextArea(5, 30);
                 resArea.setEditable(false);
                 resultPanel.add(new JScrollPane(resArea), BorderLayout.CENTER);
 
-                JButton calcBtn = new JButton("▶ Calcular Salida");
+                JButton calcBtn = new JButton("Calcular Salida");
                 calcBtn.setBackground(new Color(40, 140, 40));
                 calcBtn.setForeground(Color.WHITE);
+                calcBtn.setToolTipText("Evalua la red neuronal cargada con los valores ingresados");
                 calcBtn.addActionListener(ev -> {
                     try {
                         double[] in = new double[inputCount];
@@ -730,16 +1110,16 @@ public class AdminPanel extends JPanel {
                                     bestIdx = k;
                                 }
                             }
-                            sb.append(String.format("Clase Predicha: %s (Activación: %.2f%%)\n",
+                            sb.append(String.format("Clase Predicha: %s (Activacion: %.2f%%)\n",
                                     labels.get(bestIdx), maxV * 100.0));
                         }
                         resArea.setText(sb.toString());
                     } catch (Exception ex) {
-                        resArea.setText("Error en cálculo: " + ex.getMessage());
+                        resArea.setText("Error en calculo: " + ex.getMessage());
                     }
                 });
 
-                dialog.add(inputsPanel, BorderLayout.NORTH);
+                dialog.add(new JScrollPane(inputsPanel), BorderLayout.NORTH);
                 dialog.add(resultPanel, BorderLayout.CENTER);
                 dialog.add(calcBtn, BorderLayout.SOUTH);
                 dialog.setVisible(true);
@@ -753,51 +1133,9 @@ public class AdminPanel extends JPanel {
         });
     }
 
-    private void refreshLeaderboard() {
-        connection.getLeaderboard(null).thenAccept(json -> SwingUtilities.invokeLater(() -> {
-            TaskResult[] results = JsonUtil.fromJson(json, TaskResult[].class);
-            leaderboardModel.setRowCount(0);
-            currentLeaderboard.clear();
-
-            if (results != null) {
-                for (TaskResult r : results) {
-                    currentLeaderboard.add(r);
-                    EvaluationMetrics m = r.getMetrics();
-                    leaderboardModel.addRow(new Object[]{
-                            r.getTaskId(),
-                            r.getNetworkConfig() != null ? r.getNetworkConfig().getTopologySummary() : "-",
-                            r.getNetworkConfig() != null ? r.getNetworkConfig().getTransferFunction() : "-",
-                            m != null ? String.format("%.2f", m.getAccuracy()) : "-",
-                            m != null ? String.format("%.4f", m.getRmse()) : "-",
-                            m != null ? String.format("%.4f", m.getMse()) : "-",
-                            m != null ? String.format("%.4f", m.getMae()) : "-",
-                            m != null ? String.format("%.4f", m.getR2()) : "-",
-                            m != null ? String.format("%.2f", m.getMape()) : "-",
-                            m != null ? String.format("%.4f", m.getMaxError()) : "-",
-                            m != null ? String.format("%.4f", m.getPercentil90()) : "-",
-                            m != null ? String.format("%.2f", m.getTiempoSeg()) : "-",
-                            m != null ? m.getIteraciones() : "-",
-                            m != null ? String.format("%.5f", m.getErrorFinal()) : "-",
-                            r.getWorkerName()
-                    });
-                }
-            }
-            refreshStatus();
-        }));
-    }
-
-    private void downloadSelectedModel() {
-        int row = leaderboardTable.getSelectedRow();
-        if (row < 0 || row >= currentLeaderboard.size()) {
-            JOptionPane.showMessageDialog(this, "Selecciona una fila del leaderboard primero.");
-            return;
-        }
-
-        int modelRow = leaderboardTable.convertRowIndexToModel(row);
-        TaskResult selected = currentLeaderboard.get(modelRow);
-
+    private void downloadModel(TaskResult selected) {
         JFileChooser chooser = new JFileChooser();
-        chooser.setSelectedFile(new File("orquita_model_" + selected.getTaskId() + ".nnet"));
+        chooser.setSelectedFile(new File("modelo_" + selected.getTaskId() + ".nnet"));
 
         if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
             File targetFile = chooser.getSelectedFile();
@@ -807,7 +1145,7 @@ public class AdminPanel extends JPanel {
                     try (FileOutputStream fos = new FileOutputStream(targetFile)) {
                         fos.write(bytes);
                     }
-                    JOptionPane.showMessageDialog(this, "¡Archivo guardado con éxito en:\n" + targetFile.getAbsolutePath());
+                    JOptionPane.showMessageDialog(this, "Archivo .nnet guardado con exito en:\n" + targetFile.getAbsolutePath());
                 } catch (Exception ex) {
                     JOptionPane.showMessageDialog(this, "Error guardando archivo: " + ex.getMessage());
                 }
@@ -816,5 +1154,110 @@ public class AdminPanel extends JPanel {
                 return null;
             });
         }
+    }
+
+    // --- Actualización de Datos y Estado desde el Servidor ---
+    private void refreshServerProjectsAndDatasets(Runnable onComplete) {
+        connection.getStatus().thenAccept(json -> SwingUtilities.invokeLater(() -> {
+            Map<String, Object> map = JsonUtil.fromJson(json, Map.class);
+            if (map != null) {
+                cachedProjects.clear();
+                if (map.containsKey("projects")) {
+                    List<Map<String, Object>> pList = (List<Map<String, Object>>) map.get("projects");
+                    for (Map<String, Object> pm : pList) {
+                        Project p = new Project();
+                        p.setId((String) pm.get("id"));
+                        p.setName((String) pm.get("name"));
+                        cachedProjects.add(p);
+                    }
+                }
+
+                cachedDatasets.clear();
+                if (map.containsKey("datasets")) {
+                    List<Map<String, Object>> dList = (List<Map<String, Object>>) map.get("datasets");
+                    for (Map<String, Object> dm : dList) {
+                        DatasetMetadata d = new DatasetMetadata();
+                        d.setId((String) dm.get("id"));
+                        d.setName((String) dm.get("name"));
+                        d.setProjectId((String) dm.get("projectId"));
+                        d.setProjectName((String) dm.get("projectName"));
+                        cachedDatasets.add(d);
+                    }
+                }
+
+                // Actualizar combos de proyectos
+                uploadProjectCombo.removeAllItems();
+                campaignProjectCombo.removeAllItems();
+                lbProjectCombo.removeAllItems();
+                lbProjectCombo.addItem(null); // Opcion todos los proyectos
+                compProjectCombo.removeAllItems();
+
+                for (Project p : cachedProjects) {
+                    uploadProjectCombo.addItem(p);
+                    campaignProjectCombo.addItem(p);
+                    lbProjectCombo.addItem(p);
+                    compProjectCombo.addItem(p);
+                }
+
+                updateCampaignDatasetsDropdown();
+                updateLbDatasetsDropdown();
+
+                refreshStatus();
+
+                if (onComplete != null) {
+                    onComplete.run();
+                }
+            }
+        }));
+    }
+
+    private void refreshStatus() {
+        connection.getStatus().thenAccept(json -> SwingUtilities.invokeLater(() -> {
+            Map<String, Object> map = JsonUtil.fromJson(json, Map.class);
+            if (map != null) {
+                int workers = ((Number) map.getOrDefault("activeWorkers", 0)).intValue();
+                int totalSlots = ((Number) map.getOrDefault("totalSlots", 0)).intValue();
+                int busySlots = ((Number) map.getOrDefault("busySlots", 0)).intValue();
+                int pending = ((Number) map.getOrDefault("pendingTasks", 0)).intValue();
+                int running = ((Number) map.getOrDefault("runningTasks", 0)).intValue();
+                int completed = ((Number) map.getOrDefault("completedTasks", 0)).intValue();
+
+                workersStatusLabel.setText(String.format("Workers: %d conectados | Slots: %d en uso / %d totales",
+                        workers, busySlots, totalSlots));
+                campaignStatusLabel.setText(String.format("Tareas globales: %d pendientes | %d en progreso | %d completadas",
+                        pending, running, completed));
+
+                // Actualizar tabla de campañas activas
+                activeCampaignsModel.setRowCount(0);
+                cachedActiveCampaigns.clear();
+
+                if (map.containsKey("activeCampaigns")) {
+                    List<Map<String, Object>> camps = (List<Map<String, Object>>) map.get("activeCampaigns");
+                    for (Map<String, Object> cm : camps) {
+                        CampaignConfig c = new CampaignConfig();
+                        c.setCampaignId((String) cm.get("campaignId"));
+                        c.setName((String) cm.get("name"));
+                        c.setProjectId((String) cm.get("projectId"));
+                        c.setDatasetId((String) cm.get("datasetId"));
+                        c.setDatasetName((String) cm.get("datasetName"));
+                        c.setStatus((String) cm.get("status"));
+                        c.setPatience(cm.containsKey("patience") ? ((Number) cm.get("patience")).intValue() : 80);
+                        c.setTargetError(cm.containsKey("targetError") ? ((Number) cm.get("targetError")).doubleValue() : 0.01);
+                        cachedActiveCampaigns.add(c);
+
+                        activeCampaignsModel.addRow(new Object[]{
+                                c.getCampaignId(),
+                                c.getName(),
+                                c.getProjectId(),
+                                c.getDatasetName() != null ? c.getDatasetName() : c.getDatasetId(),
+                                cm.get("heuristicType"),
+                                c.getStatus(),
+                                c.getPatience(),
+                                String.format("%.4f", c.getTargetError())
+                        });
+                    }
+                }
+            }
+        }));
     }
 }

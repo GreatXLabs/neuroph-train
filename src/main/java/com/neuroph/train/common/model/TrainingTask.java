@@ -9,7 +9,9 @@ public class TrainingTask implements Comparable<TrainingTask> {
 
     private String taskId;
     private String campaignId;
+    private String projectId = "default-project";
     private String datasetId;
+    private String datasetName;
     private NetworkConfig networkConfig;
     private double trainRatio = 0.70;
     private long splitSeed = 42L;
@@ -57,12 +59,28 @@ public class TrainingTask implements Comparable<TrainingTask> {
         this.campaignId = campaignId;
     }
 
+    public String getProjectId() {
+        return projectId != null ? projectId : "default-project";
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
     public String getDatasetId() {
         return datasetId;
     }
 
     public void setDatasetId(String datasetId) {
         this.datasetId = datasetId;
+    }
+
+    public String getDatasetName() {
+        return datasetName;
+    }
+
+    public void setDatasetName(String datasetName) {
+        this.datasetName = datasetName;
     }
 
     public NetworkConfig getNetworkConfig() {

@@ -7,6 +7,9 @@ public class TaskResult {
 
     private String taskId;
     private String campaignId;
+    private String projectId = "default-project";
+    private String datasetId;
+    private String datasetName;
     private String workerId;
     private String workerName;
     private NetworkConfig networkConfig;
@@ -46,6 +49,30 @@ public class TaskResult {
 
     public void setCampaignId(String campaignId) {
         this.campaignId = campaignId;
+    }
+
+    public String getProjectId() {
+        return projectId != null ? projectId : "default-project";
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
+    public String getDatasetId() {
+        return datasetId;
+    }
+
+    public void setDatasetId(String datasetId) {
+        this.datasetId = datasetId;
+    }
+
+    public String getDatasetName() {
+        return datasetName;
+    }
+
+    public void setDatasetName(String datasetName) {
+        this.datasetName = datasetName;
     }
 
     public String getWorkerId() {

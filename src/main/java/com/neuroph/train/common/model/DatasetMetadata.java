@@ -12,6 +12,8 @@ public class DatasetMetadata {
 
     private String id;
     private String name;
+    private String projectId = "default-project";
+    private String projectName = "Proyecto Principal";
     private String filename;
     private int numRows;
     private boolean hasHeader = true;
@@ -186,5 +188,26 @@ public class DatasetMetadata {
 
     public void setCsvContent(String csvContent) {
         this.csvContent = csvContent;
+    }
+
+    public String getProjectId() {
+        return projectId != null ? projectId : "default-project";
+    }
+
+    public void setProjectId(String projectId) {
+        this.projectId = projectId;
+    }
+
+    public String getProjectName() {
+        return projectName != null ? projectName : "Proyecto Principal";
+    }
+
+    public void setProjectName(String projectName) {
+        this.projectName = projectName;
+    }
+
+    @Override
+    public String toString() {
+        return name != null && !name.isEmpty() ? name + " (" + id + ")" : (id != null ? id : "Dataset");
     }
 }
